@@ -228,7 +228,6 @@ onBeforeUnmount(() => {
       </button>
       <div class="pixel-crown" aria-hidden="true">♛</div>
       <h2>{{ t('leaderboard.title') }}</h2>
-      <p>{{ t('leaderboard.subtitle') }}</p>
       <strong v-if="game.leaderboard.groupName">{{ game.leaderboard.groupName }}</strong>
       <i class="hero-block block-a" /><i class="hero-block block-b" />
       <i class="hero-block block-c" /><i class="hero-block block-d" />
