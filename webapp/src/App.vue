@@ -170,11 +170,6 @@ onBeforeUnmount(() => {
   </main>
 
   <template v-else>
-    <nav class="view-tabs" aria-label="Battle views">
-      <button :class="{ active: activeView === 'game' }" @click="switchView('game')">{{ t('tabs.game') }}</button>
-      <button :class="{ active: activeView === 'leaderboard' }" @click="switchView('leaderboard')">{{ t('tabs.leaderboard') }}</button>
-    </nav>
-
   <main v-if="activeView === 'game'" class="controller" :class="{ offline: !game.ready.value }">
     <section class="utility-row">
       <button
@@ -199,6 +194,10 @@ onBeforeUnmount(() => {
         :disabled="!canReconnect"
         @click="game.reconnect"
       ><i />{{ bleLabel }}</button>
+      <button
+        class="small purple leaderboard-control"
+        @click="switchView('leaderboard')"
+      ><i />{{ t('tabs.leaderboard') }}</button>
     </section>
 
     <button class="drop blue" :class="{ pressed: pressed === 'DROP' }" :disabled="!canPlay" @pointerdown.prevent="tap('DROP')">
@@ -215,6 +214,9 @@ onBeforeUnmount(() => {
 
   <main v-else class="leaderboard-page">
     <header class="leaderboard-hero">
+      <button class="leaderboard-back" @click="switchView('game')">
+        <span aria-hidden="true">←</span>{{ t('leaderboard.back') }}
+      </button>
       <div class="pixel-crown" aria-hidden="true">♛</div>
       <h2>{{ t('leaderboard.title') }}</h2>
       <p>{{ t('leaderboard.subtitle') }}</p>
