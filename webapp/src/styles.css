@@ -57,6 +57,9 @@ button { border: 0; color: inherit; font: inherit; -webkit-tap-highlight-color: 
 .controller.offline .utility-row > button:not(.ble-control):not(.leaderboard-control),
 .controller.offline .drop,
 .controller.offline .dpad { filter: grayscale(1); opacity: .58; }
+.controller.spectator .utility-row > button:not(.leaderboard-control),
+.controller.spectator .drop,
+.controller.spectator .dpad { filter: grayscale(1); opacity: .58; }
 button { cursor: pointer; }
 .utility-row { position: absolute; z-index: 2; top: 4%; left: 4.5%; display: flex; gap: clamp(8px, 2vw, 24px); }
 .small { display: grid; grid-template-rows: clamp(48px, 15vmin, 62px) auto; justify-items: center; gap: 5px; min-width: 74px; max-width: 116px; background: transparent; font-size: clamp(14px, 4vmin, 20px); line-height: 1.1; }

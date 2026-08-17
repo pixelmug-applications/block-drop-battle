@@ -98,9 +98,7 @@ async function sendBattleEntry(ctx) {
   try {
     if (!isGroupChat(ctx)) throw new Error("两位玩家和 Bot 必须在同一个群聊中，请到对战群里使用 /battle");
     if (!userId) throw new Error("无法识别发起命令的用户");
-    const { players } = await syncBindingSnapshot(ctx, { validateBattle: true });
-    const player = players.find((item) => item.user_id === userId);
-    if (!player) throw new Error("你不是两个已绑定 PixelMugS1 的所属用户，不能进入本场对战");
+    rememberContextUser(ctx);
 
     const keyboard = new InlineKeyboard().url("打开我的对战手柄", webAppUrl);
     await ctx.sendKeyboard(
@@ -112,6 +110,31 @@ async function sendBattleEntry(ctx) {
     await ctx.sendText(`无法启动对战游戏：${errorMessage(error)}`);
   }
 }
+
+bot.onWebAppRequest("battle.getAccess", async (ctx) => {
+  const chatId = chatIdFromContext(ctx);
+  const userId = userIdFromContext(ctx);
+  if (!isGroupChat(ctx) || !chatId || !userId) {
+    throw webAppAccessError("只能从对战群中打开此 WebApp");
+  }
+
+  rememberContextUser(ctx);
+  try {
+    const { players } = await syncBindingSnapshot(ctx, { validateBattle: true });
+    const player = players.find((item) => item.user_id === userId);
+    const canPlay = Boolean(player);
+    battleLog("webapp.access", { chatId, userId, canPlay, players: playerStates(players) });
+    return {
+      role: canPlay ? "player" : "spectator",
+      canPlay,
+      reason: canPlay ? "" : "当前用户没有绑定本群的对战设备",
+    };
+  } catch (error) {
+    const reason = errorMessage(error);
+    battleLog("webapp.access", { chatId, userId, canPlay: false, reason });
+    return { role: "spectator", canPlay: false, reason };
+  }
+});
 
 bot.onWebAppRequest("battle.resolveDevice", async (ctx) => {
   const { chatId, userId, player, players } = await authorizedBattlePlayer(ctx);

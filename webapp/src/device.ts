@@ -30,6 +30,7 @@ type DeviceEventPayload = {
 
 export type BlockDropCommand = 'JOIN' | 'START' | 'LEFT' | 'RIGHT' | 'DOWN' | 'ROTATE' | 'DROP' | 'RESTART' | 'SOUND';
 export type LaunchPhase = 'idle' | 'requesting' | 'preparing' | 'switching' | 'ready' | 'failed';
+export type BattleAccessRole = 'checking' | 'player' | 'spectator';
 export type LeaderboardPlayer = {
   userId: string;
   name: string;
@@ -57,6 +58,10 @@ const leaderboard = reactive({
   loading: false,
   error: '',
   loadedAt: 0,
+});
+const access = reactive({
+  role: 'checking' as BattleAccessRole,
+  reason: '',
 });
 const hasBridge = () => Boolean((globalThis as { JeeWeb?: unknown }).JeeWeb);
 const webApp = new BubbleWebApp({ debug: import.meta.env.DEV, timeoutMillis: 20000 });
@@ -112,17 +117,26 @@ function protocolClient() {
 export function useBlockDropDevice() {
   const ready = computed(() => state.connection === 'ready' || !hasBridge());
   const connecting = computed(() => state.connection === 'connecting');
+  const canControl = computed(() => access.role === 'player');
 
   async function openOnDevice() {
     state.launchPhase = 'requesting';
     state.message = t('status.findingDevice');
     try {
+      if (!(await resolveBattleAccess())) {
+        device = null;
+        state.connection = 'idle';
+        state.launchPhase = 'ready';
+        state.message = t('status.spectator');
+        return false;
+      }
       device = await loadDevice();
       if (!device) throw new Error(t('status.deviceMissing'));
       await openMpsApp(device);
       await activateDeviceRoute();
       state.launchPhase = 'ready';
       state.message = t('status.launchReady');
+      return true;
 
     } catch (error) {
       state.launchPhase = 'failed';
@@ -132,7 +146,7 @@ export function useBlockDropDevice() {
   }
 
   async function connectDevice() {
-    if (!device) return;
+    if (!canControl.value || !device) return;
     if (!hasBridge()) {
       state.connection = 'ready';
       state.message = t('status.mockConnected');
@@ -158,7 +172,7 @@ export function useBlockDropDevice() {
   }
 
   async function reconnect() {
-    if (!device || !hasBridge() || connecting.value) return;
+    if (!canControl.value || !device || !hasBridge() || connecting.value) return;
     state.connection = 'connecting';
     state.message = 'Connecting BLE...';
     try {
@@ -178,7 +192,7 @@ export function useBlockDropDevice() {
   }
 
   async function send(command: BlockDropCommand) {
-    if (!device || !ready.value) return false;
+    if (!canControl.value || !device || !ready.value) return false;
     if (!hasBridge()) {
       if (command === 'RESTART') state.lines = 0;
       if (command === 'SOUND') state.soundEnabled = !state.soundEnabled;
@@ -202,7 +216,7 @@ export function useBlockDropDevice() {
   }
 
   async function syncState() {
-    if (!device || !hasBridge()) return;
+    if (!canControl.value || !device || !hasBridge()) return;
     const response = await protocolClient().send(device, {
       method: 'blockDropBattleGetState',
       id: `block_drop_battle_state_${Date.now()}`,
@@ -217,7 +231,7 @@ export function useBlockDropDevice() {
   }
 
   async function refreshState(force = false) {
-    if (!hasBridge()) return false;
+    if (!canControl.value || !hasBridge()) return false;
     // A WebView can freeze both the request and its timeout while the phone is
     // asleep. Foreground refreshes may replace that stale in-flight operation.
     if (stateSyncInFlight && !force) return false;
@@ -264,9 +278,11 @@ export function useBlockDropDevice() {
 
   return {
     state,
+    access,
     leaderboard,
     ready,
     connecting,
+    canControl,
     openOnDevice,
     connectDevice,
     reconnect,
@@ -274,6 +290,23 @@ export function useBlockDropDevice() {
     refreshState,
     loadLeaderboard,
   };
+}
+
+async function resolveBattleAccess() {
+  if (!hasBridge()) {
+    access.role = 'player';
+    access.reason = '';
+    return true;
+  }
+  const requestClient = webApp as BubbleWebApp & {
+    request: (type: string, payload?: unknown, options?: Record<string, unknown>) => Promise<unknown>;
+  };
+  const reply = await requestClient.request('battle.getAccess') as any;
+  const result = reply?.result || reply || {};
+  const canPlay = result.canPlay === true || result.role === 'player';
+  access.role = canPlay ? 'player' : 'spectator';
+  access.reason = String(result.reason || '');
+  return canPlay;
 }
 
 async function openMpsApp(target: DeviceInfo) {

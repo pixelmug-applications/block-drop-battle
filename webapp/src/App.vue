@@ -23,7 +23,7 @@ const bleLabel = computed(() => {
   return t('ble.disconnected');
 });
 
-const canReconnect = computed(() => !game.ready.value && !game.connecting.value);
+const canReconnect = computed(() => game.canControl.value && !game.ready.value && !game.connecting.value);
 
 async function openGame() {
   if (prepared.value) {
@@ -33,8 +33,12 @@ async function openGame() {
   busy.value = true;
   error.value = '';
   try {
-    await game.openOnDevice();
+    const canPlay = await game.openOnDevice();
     prepared.value = true;
+    if (!canPlay) {
+      entered.value = true;
+      return;
+    }
     void game.connectDevice();
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason);
@@ -65,12 +69,13 @@ const actionLabel = computed(() => {
   return t('game.finished');
 });
 
-const canPlay = computed(() => game.ready.value && game.state.gameState === 'playing');
+const canPlay = computed(() => game.canControl.value && game.ready.value && game.state.gameState === 'playing');
 const canPrimaryAction = computed(() => {
+  if (!game.canControl.value) return false;
   if (['join', 'go'].includes(game.state.gameState)) return game.ready.value;
   return ['ready', 'playing', 'finished', 'win', 'lose'].includes(game.state.gameState);
 });
-const canRestart = computed(() => game.ready.value && ['win', 'lose'].includes(game.state.gameState));
+const canRestart = computed(() => game.canControl.value && game.ready.value && ['win', 'lose'].includes(game.state.gameState));
 
 function hold(command: 'LEFT' | 'RIGHT' | 'DOWN', event: PointerEvent) {
   (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -170,7 +175,11 @@ onBeforeUnmount(() => {
   </main>
 
   <template v-else>
-  <main v-if="activeView === 'game'" class="controller" :class="{ offline: !game.ready.value }">
+  <main
+    v-if="activeView === 'game'"
+    class="controller"
+    :class="{ offline: !game.ready.value || !game.canControl.value, spectator: !game.canControl.value }"
+  >
     <section class="utility-row">
       <button
         class="small green"
@@ -184,7 +193,7 @@ onBeforeUnmount(() => {
         class="small green"
         :class="{ pressed: pressed === 'SOUND', muted: !game.state.soundEnabled }"
         :title="game.state.soundEnabled ? t('game.soundDisable') : t('game.soundEnable')"
-        :disabled="!game.ready.value"
+        :disabled="!game.canControl.value || !game.ready.value"
         @click="tap('SOUND')"
       ><i />{{ game.state.soundEnabled ? t('game.soundOn') : t('game.soundOff') }}</button>
       <button class="small red" :class="{ pressed: pressed === 'RESTART' }" :disabled="!canRestart" @click="tap('RESTART')"><i />{{ t('game.restart') }}</button>
