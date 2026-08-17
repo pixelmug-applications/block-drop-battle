@@ -207,6 +207,18 @@ bot.onWebAppRequest("battle.getLeaderboard", async (ctx) => {
   return { groupName: String(ctx.chat?.name || ""), rows };
 });
 
+bot.onWebAppRequest("battle.getPersonalLeaderboard", async (ctx) => {
+  const chatId = chatIdFromContext(ctx);
+  const userId = userIdFromContext(ctx);
+  if (!isGroupChat(ctx) || !chatId || !userId) {
+    throw webAppAccessError("无法识别当前对战群");
+  }
+  rememberContextUser(ctx);
+  const rows = personalLeaderboardRows(store.personalLeaderboard(chatId));
+  battleLog("webapp.personalLeaderboard", { chatId, userId, rowCount: rows.length });
+  return { groupName: String(ctx.chat?.name || ""), rows };
+});
+
 let eventChain = Promise.resolve();
 bot.on("device_notify", async (ctx) => {
   eventChain = eventChain
@@ -403,7 +415,8 @@ async function finishRound(chatId, endedUserId) {
   if (outcome.status === "waiting") return;
 
   if (outcome.autoFinishUserId) {
-    store.updateState(chatId, outcome.autoFinishUserId, "finished", { lines: 0 });
+    const autoFinished = store.updateState(chatId, outcome.autoFinishUserId, "finished", { lines: 0 });
+    recordPersonalBest(autoFinished, 0);
   }
 
   if (outcome.status === "draw") {
@@ -657,6 +670,40 @@ function leaderboardRows(rows, viewerId) {
   });
 }
 
+function personalLeaderboardRows(rows) {
+  return rows.map((row, index) => ({
+    rank: index + 1,
+    userId: row.user_id,
+    name: row.user_name || shortUserName(row.user_id),
+    avatar: row.avatar_url || "",
+    bestLines: Number(row.best_lines || 0),
+    updatedAt: Number(row.updated_at || 0),
+  }));
+}
+
+function recordPersonalBest(player, lines) {
+  if (!player) return;
+  try {
+    store.upsertGroupUser(player.chat_id, {
+      userId: player.user_id,
+      userName: player.user_name,
+    });
+    const updated = store.recordPersonalBest(player.chat_id, player.user_id, lines);
+    battleLog("leaderboard.personalBest", {
+      chatId: player.chat_id,
+      userId: player.user_id,
+      lines: Math.max(0, Math.floor(Number(lines || 0))),
+      updated,
+    });
+  } catch (error) {
+    battleLog("leaderboard.personalBestFailed", {
+      chatId: player.chat_id,
+      userId: player.user_id,
+      error: errorMessage(error),
+    });
+  }
+}
+
 function shortUserName(userId) {
   const value = String(userId || "player");
   return value.length > 12 ? `${value.slice(0, 9)}…` : value;
@@ -715,7 +762,8 @@ async function applyBattleState(player, event) {
   }
   if (player.game_state === "finished" && player.result) return;
   if (!["go", "playing"].includes(player.game_state)) return;
-  store.updateState(player.chat_id, player.user_id, "finished", { lines });
+  const finishedPlayer = store.updateState(player.chat_id, player.user_id, "finished", { lines });
+  recordPersonalBest(finishedPlayer, lines);
   await finishRound(player.chat_id, player.user_id);
 }
 

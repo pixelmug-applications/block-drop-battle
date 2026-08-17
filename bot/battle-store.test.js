@@ -284,3 +284,43 @@ test("leaderboard history survives current binding removal", () => {
     item.close();
   }
 });
+
+test("personal best only increases and is isolated and ranked by group", () => {
+  const item = fixture();
+  try {
+    item.store.upsertGroupUser("group-1", {
+      userId: "user-a",
+      userName: "Alice",
+      avatarUrl: "https://example.com/alice.png",
+    });
+    item.store.upsertGroupUser("group-1", { userId: "user-b", userName: "Bob" });
+
+    assert.equal(item.store.recordPersonalBest("group-1", "user-a", 8, 100), true);
+    assert.equal(item.store.recordPersonalBest("group-1", "user-a", 5, 200), false);
+    assert.equal(item.store.recordPersonalBest("group-1", "user-a", 8, 300), false);
+    assert.equal(item.store.recordPersonalBest("group-1", "user-a", 12, 400), true);
+    assert.equal(item.store.recordPersonalBest("group-1", "user-b", 15, 500), true);
+    assert.equal(item.store.recordPersonalBest("group-2", "user-a", 3, 600), true);
+
+    assert.deepEqual(item.store.personalLeaderboard("group-1").map((row) => ({ ...row })), [
+      {
+        user_id: "user-b",
+        user_name: "Bob",
+        avatar_url: "",
+        best_lines: 15,
+        updated_at: 500,
+      },
+      {
+        user_id: "user-a",
+        user_name: "Alice",
+        avatar_url: "https://example.com/alice.png",
+        best_lines: 12,
+        updated_at: 400,
+      },
+    ]);
+    assert.equal(item.store.personalLeaderboard("group-2")[0].best_lines, 3);
+    assert.equal(item.store.personalLeaderboard("missing-group").length, 0);
+  } finally {
+    item.close();
+  }
+});

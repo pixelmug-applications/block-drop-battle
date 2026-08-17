@@ -189,6 +189,13 @@ button:disabled { cursor: default; }
   font: 800 12px/1 ui-monospace, monospace;
 }
 .leaderboard-refresh:disabled { opacity: .6; }
+.leaderboard-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin: 0 auto 14px;
+}
+.leaderboard-actions .leaderboard-refresh { margin: 0; }
 .leaderboard-status {
   width: min(480px, 92vw);
   margin: 50px auto;
@@ -254,6 +261,23 @@ button:disabled { cursor: default; }
 }
 .rank-pk span { transform: rotate(-6deg); color: #191203; font: 1000 28px/1 Arial Black, sans-serif; -webkit-text-stroke: 1px #fff3a8; text-shadow: 2px 3px 0 #f5c400; }
 .rank-pk small { align-self: end; max-width: 80px; overflow: hidden; color: #78621f; font: 700 9px/1.1 ui-monospace, monospace; text-align: center; white-space: nowrap; }
+.personal-card { grid-template-columns: 52px minmax(0, 1fr) auto; gap: 12px; }
+.personal-rank {
+  color: #916700;
+  font: 1000 clamp(19px, 5vw, 28px)/1 Arial Black, sans-serif;
+  text-align: center;
+  text-shadow: 1px 1px 0 #ffe369;
+}
+.personal-best {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: end;
+  justify-items: end;
+  color: #171006;
+}
+.personal-best small { grid-column: 1 / -1; color: #78621f; font: 800 10px/1 ui-monospace, monospace; }
+.personal-best strong { font: 1000 clamp(34px, 9vw, 52px)/.9 Arial Black, sans-serif; text-shadow: 2px 2px 0 #e2b21c; }
+.personal-best span { padding: 0 0 3px 4px; color: #78621f; font: 800 11px/1 ui-monospace, monospace; }
 
 @media (orientation: portrait) {
   html, body { width: 100vw; height: 100vh; height: 100dvh; overflow: hidden; }

@@ -43,6 +43,14 @@ export type LeaderboardRow = {
   games: number;
   lastPlayedAt: number;
 };
+export type PersonalLeaderboardRow = {
+  rank: number;
+  userId: string;
+  name: string;
+  avatar: string;
+  bestLines: number;
+  updatedAt: number;
+};
 
 const state = reactive({
   connection: 'idle',
@@ -59,6 +67,13 @@ const leaderboard = reactive({
   error: '',
   loadedAt: 0,
 });
+const personalLeaderboard = reactive({
+  groupName: '',
+  rows: [] as PersonalLeaderboardRow[],
+  loading: false,
+  error: '',
+  loadedAt: 0,
+});
 const access = reactive({
   role: 'checking' as BattleAccessRole,
   reason: '',
@@ -70,6 +85,7 @@ let device: DeviceInfo | null = null;
 let stateSyncInFlight = false;
 let stateSyncGeneration = 0;
 let leaderboardGeneration = 0;
+let personalLeaderboardGeneration = 0;
 let battleResolution: {
   userId: string;
   deviceId: string;
@@ -276,10 +292,36 @@ export function useBlockDropDevice() {
     }
   }
 
+  async function loadPersonalLeaderboard(force = false) {
+    if (!hasBridge() || (personalLeaderboard.loading && !force)) return false;
+    const generation = ++personalLeaderboardGeneration;
+    personalLeaderboard.loading = true;
+    personalLeaderboard.error = '';
+    try {
+      const requestClient = webApp as BubbleWebApp & {
+        request: (type: string, payload?: unknown, options?: Record<string, unknown>) => Promise<unknown>;
+      };
+      const reply = await requestClient.request('battle.getPersonalLeaderboard') as any;
+      const result = reply?.result || reply || {};
+      personalLeaderboard.groupName = String(result.groupName || '');
+      personalLeaderboard.rows = Array.isArray(result.rows)
+        ? result.rows.map(normalizePersonalLeaderboardRow).filter(Boolean) as PersonalLeaderboardRow[]
+        : [];
+      personalLeaderboard.loadedAt = Date.now();
+      return true;
+    } catch (error) {
+      personalLeaderboard.error = errorMessage(error);
+      return false;
+    } finally {
+      if (generation === personalLeaderboardGeneration) personalLeaderboard.loading = false;
+    }
+  }
+
   return {
     state,
     access,
     leaderboard,
+    personalLeaderboard,
     ready,
     connecting,
     canControl,
@@ -289,6 +331,7 @@ export function useBlockDropDevice() {
     send,
     refreshState,
     loadLeaderboard,
+    loadPersonalLeaderboard,
   };
 }
 
@@ -604,6 +647,18 @@ function normalizeLeaderboardPlayer(value: any): LeaderboardPlayer {
     name: String(value?.name || t('leaderboard.player')),
     avatar: safeImageUrl(value?.avatar),
     wins: Math.max(0, Math.floor(Number(value?.wins || 0))),
+  };
+}
+
+function normalizePersonalLeaderboardRow(value: any): PersonalLeaderboardRow | null {
+  if (!value?.userId) return null;
+  return {
+    rank: Math.max(1, Math.floor(Number(value.rank || 1))),
+    userId: String(value.userId),
+    name: String(value.name || t('leaderboard.player')),
+    avatar: safeImageUrl(value.avatar),
+    bestLines: Math.max(0, Math.floor(Number(value.bestLines || 0))),
+    updatedAt: Math.max(0, Math.floor(Number(value.updatedAt || 0))),
   };
 }
 

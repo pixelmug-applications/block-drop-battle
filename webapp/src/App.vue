@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useBlockDropDevice, type BlockDropCommand, type LeaderboardPlayer } from './device';
+import { useBlockDropDevice, type BlockDropCommand } from './device';
 import { t } from './i18n';
 
 const game = useBlockDropDevice();
@@ -10,6 +10,7 @@ const busy = ref(false);
 const error = ref('');
 const pressed = ref<BlockDropCommand | ''>('');
 const activeView = ref<'game' | 'leaderboard'>('game');
+const leaderboardMode = ref<'battle' | 'personal'>('battle');
 let repeatTimer: number | undefined;
 let bleCountdownTimer: number | undefined;
 let stateSyncTimer: number | undefined;
@@ -96,21 +97,32 @@ function refreshAfterResume() {
   if (!entered.value || document.visibilityState === 'hidden') return;
   window.clearTimeout(resumeRefreshTimer);
   resumeRefreshTimer = window.setTimeout(() => {
-    if (activeView.value === 'leaderboard') void game.loadLeaderboard(true);
+    if (activeView.value === 'leaderboard') void loadActiveLeaderboard(true);
     else void game.refreshState(true);
   }, 150);
 }
 
 function switchView(view: 'game' | 'leaderboard') {
   activeView.value = view;
-  if (view === 'leaderboard') void game.loadLeaderboard();
+  if (view === 'leaderboard') void loadActiveLeaderboard();
 }
 
-function playerInitial(player: LeaderboardPlayer) {
+function switchLeaderboardMode() {
+  leaderboardMode.value = leaderboardMode.value === 'battle' ? 'personal' : 'battle';
+  void loadActiveLeaderboard();
+}
+
+function loadActiveLeaderboard(force = false) {
+  return leaderboardMode.value === 'battle'
+    ? game.loadLeaderboard(force)
+    : game.loadPersonalLeaderboard(force);
+}
+
+function playerInitial(player: { name: string }) {
   return Array.from(player.name.trim() || '?')[0]?.toUpperCase() || '?';
 }
 
-function hideBrokenAvatar(player: LeaderboardPlayer) {
+function hideBrokenAvatar(player: { avatar: string }) {
   player.avatar = '';
 }
 
@@ -228,29 +240,35 @@ onBeforeUnmount(() => {
         <span aria-hidden="true">←</span>{{ t('leaderboard.back') }}
       </button>
       <div class="pixel-crown" aria-hidden="true">♛</div>
-      <h2>{{ t('leaderboard.title') }}</h2>
+      <h2>{{ t(leaderboardMode === 'battle' ? 'leaderboard.title' : 'leaderboard.personalTitle') }}</h2>
       <i class="hero-block block-a" /><i class="hero-block block-b" />
       <i class="hero-block block-c" /><i class="hero-block block-d" />
     </header>
 
     <section class="leaderboard-content">
-      <button
-        class="leaderboard-refresh"
-        :disabled="game.leaderboard.loading"
-        @click="game.loadLeaderboard(true)"
-      >↻ {{ t('leaderboard.refresh') }}</button>
+      <div class="leaderboard-actions">
+        <button
+          class="leaderboard-refresh"
+          :disabled="leaderboardMode === 'battle' ? game.leaderboard.loading : game.personalLeaderboard.loading"
+          @click="loadActiveLeaderboard(true)"
+        >↻ {{ t('leaderboard.refresh') }}</button>
+        <button class="leaderboard-refresh" @click="switchLeaderboardMode">
+          {{ t(leaderboardMode === 'battle' ? 'leaderboard.personal' : 'leaderboard.battle') }}
+        </button>
+      </div>
 
-      <p v-if="game.leaderboard.loading && !game.leaderboard.rows.length" class="leaderboard-status">
-        {{ t('leaderboard.loading') }}
-      </p>
-      <p v-else-if="game.leaderboard.error && !game.leaderboard.rows.length" class="leaderboard-status error">
-        {{ game.leaderboard.error }}
-      </p>
-      <p v-else-if="!game.leaderboard.rows.length" class="leaderboard-status">
-        {{ t('leaderboard.empty') }}
-      </p>
+      <template v-if="leaderboardMode === 'battle'">
+        <p v-if="game.leaderboard.loading && !game.leaderboard.rows.length" class="leaderboard-status">
+          {{ t('leaderboard.loading') }}
+        </p>
+        <p v-else-if="game.leaderboard.error && !game.leaderboard.rows.length" class="leaderboard-status error">
+          {{ game.leaderboard.error }}
+        </p>
+        <p v-else-if="!game.leaderboard.rows.length" class="leaderboard-status">
+          {{ t('leaderboard.empty') }}
+        </p>
 
-      <div v-else class="leaderboard-list">
+        <div v-else class="leaderboard-list">
         <article v-for="row in game.leaderboard.rows" :key="`${row.left.userId}:${row.right.userId}`" class="matchup-card">
           <div class="rank-player left-player">
             <div class="rank-avatar">
@@ -279,7 +297,38 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </article>
-      </div>
+        </div>
+      </template>
+
+      <template v-else>
+        <p v-if="game.personalLeaderboard.loading && !game.personalLeaderboard.rows.length" class="leaderboard-status">
+          {{ t('leaderboard.personalLoading') }}
+        </p>
+        <p v-else-if="game.personalLeaderboard.error && !game.personalLeaderboard.rows.length" class="leaderboard-status error">
+          {{ game.personalLeaderboard.error }}
+        </p>
+        <p v-else-if="!game.personalLeaderboard.rows.length" class="leaderboard-status">
+          {{ t('leaderboard.personalEmpty') }}
+        </p>
+
+        <div v-else class="leaderboard-list">
+          <article v-for="row in game.personalLeaderboard.rows" :key="row.userId" class="matchup-card personal-card">
+            <strong class="personal-rank">#{{ row.rank }}</strong>
+            <div class="rank-player">
+              <div class="rank-avatar">
+                <span>{{ playerInitial(row) }}</span>
+                <img v-if="row.avatar" :src="row.avatar" :alt="row.name" @error="hideBrokenAvatar(row)" />
+              </div>
+              <div class="rank-identity"><b>{{ row.name }}</b></div>
+            </div>
+            <div class="personal-best">
+              <small>{{ t('leaderboard.bestLines') }}</small>
+              <strong>{{ row.bestLines }}</strong>
+              <span>{{ t('leaderboard.lines') }}</span>
+            </div>
+          </article>
+        </div>
+      </template>
     </section>
   </main>
   </template>

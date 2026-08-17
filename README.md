@@ -24,6 +24,8 @@ WIN/LOSE 下发的前提下记录本局历史，并按玩家组合汇总双方�
 - 玩家解绑或更换设备不会删除历史成绩。
 - 用户名和头像保存为群内用户档案，并在绑定设备或打开 WebApp 时更新。
 - 排行榜通过 `battle.getLeaderboard` 读取 Bot 数据，不依赖 BLE 连接。
+- Bot 在每位玩家最终 `GAME_OVER` 时更新该群的个人最高消除行数；只有新成绩更高时才覆盖。
+- 个人英雄榜通过 `battle.getPersonalLeaderboard` 按最高消除行数从高到低读取，数据同样以 `chat_id` 隔离。
 
 ## 可靠消息协议
 

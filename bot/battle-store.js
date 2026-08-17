@@ -60,10 +60,19 @@ export class BattleStore {
         finished_at INTEGER NOT NULL,
         PRIMARY KEY (chat_id, round_id)
       );
+      CREATE TABLE IF NOT EXISTS battle_personal_scores (
+        chat_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        best_lines INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chat_id, user_id)
+      );
       CREATE INDEX IF NOT EXISTS battle_matches_chat_players
         ON battle_matches (chat_id, player_a_id, player_b_id);
       CREATE INDEX IF NOT EXISTS battle_matches_chat_finished
         ON battle_matches (chat_id, finished_at DESC);
+      CREATE INDEX IF NOT EXISTS battle_personal_scores_chat_best
+        ON battle_personal_scores (chat_id, best_lines DESC, updated_at ASC);
     `);
   }
 
@@ -489,6 +498,38 @@ export class BattleStore {
       WHERE matches.chat_id = ?
       GROUP BY matches.player_a_id, matches.player_b_id
       ORDER BY games DESC, last_played_at DESC
+    `).all(String(chatId || ""));
+  }
+
+  recordPersonalBest(chatId, userId, lines, now = Date.now()) {
+    const id = required(chatId, "chatId");
+    const playerId = required(userId, "userId");
+    const bestLines = Math.max(0, Math.floor(Number(lines || 0)));
+    const result = this.db.prepare(`
+      INSERT INTO battle_personal_scores (chat_id, user_id, best_lines, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(chat_id, user_id) DO UPDATE SET
+        best_lines = excluded.best_lines,
+        updated_at = excluded.updated_at
+      WHERE excluded.best_lines > battle_personal_scores.best_lines
+    `).run(id, playerId, bestLines, Number(now));
+    return Number(result.changes) === 1;
+  }
+
+  personalLeaderboard(chatId) {
+    return this.db.prepare(`
+      SELECT
+        scores.user_id,
+        COALESCE(users.user_name, '') AS user_name,
+        COALESCE(users.avatar_url, '') AS avatar_url,
+        scores.best_lines,
+        scores.updated_at
+      FROM battle_personal_scores AS scores
+      LEFT JOIN battle_group_users AS users
+        ON users.chat_id = scores.chat_id
+       AND users.user_id = scores.user_id
+      WHERE scores.chat_id = ?
+      ORDER BY scores.best_lines DESC, scores.updated_at ASC, scores.user_id ASC
     `).all(String(chatId || ""));
   }
 
