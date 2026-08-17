@@ -30,6 +30,18 @@ type DeviceEventPayload = {
 
 export type BlockDropCommand = 'JOIN' | 'START' | 'LEFT' | 'RIGHT' | 'DOWN' | 'ROTATE' | 'DROP' | 'RESTART' | 'SOUND';
 export type LaunchPhase = 'idle' | 'requesting' | 'preparing' | 'switching' | 'ready' | 'failed';
+export type LeaderboardPlayer = {
+  userId: string;
+  name: string;
+  avatar: string;
+  wins: number;
+};
+export type LeaderboardRow = {
+  left: LeaderboardPlayer;
+  right: LeaderboardPlayer;
+  games: number;
+  lastPlayedAt: number;
+};
 
 const state = reactive({
   connection: 'idle',
@@ -39,12 +51,20 @@ const state = reactive({
   gameState: 'join',
   soundEnabled: true,
 });
+const leaderboard = reactive({
+  groupName: '',
+  rows: [] as LeaderboardRow[],
+  loading: false,
+  error: '',
+  loadedAt: 0,
+});
 const hasBridge = () => Boolean((globalThis as { JeeWeb?: unknown }).JeeWeb);
 const webApp = new BubbleWebApp({ debug: import.meta.env.DEV, timeoutMillis: 20000 });
 let client: BleAppClient | null = null;
 let device: DeviceInfo | null = null;
 let stateSyncInFlight = false;
 let stateSyncGeneration = 0;
+let leaderboardGeneration = 0;
 let battleResolution: {
   userId: string;
   deviceId: string;
@@ -217,7 +237,43 @@ export function useBlockDropDevice() {
     }
   }
 
-  return { state, ready, connecting, openOnDevice, connectDevice, reconnect, send, refreshState };
+  async function loadLeaderboard(force = false) {
+    if (!hasBridge() || (leaderboard.loading && !force)) return false;
+    const generation = ++leaderboardGeneration;
+    leaderboard.loading = true;
+    leaderboard.error = '';
+    try {
+      const requestClient = webApp as BubbleWebApp & {
+        request: (type: string, payload?: unknown, options?: Record<string, unknown>) => Promise<unknown>;
+      };
+      const reply = await requestClient.request('battle.getLeaderboard') as any;
+      const result = reply?.result || reply || {};
+      leaderboard.groupName = String(result.groupName || '');
+      leaderboard.rows = Array.isArray(result.rows)
+        ? result.rows.map(normalizeLeaderboardRow).filter(Boolean) as LeaderboardRow[]
+        : [];
+      leaderboard.loadedAt = Date.now();
+      return true;
+    } catch (error) {
+      leaderboard.error = errorMessage(error);
+      return false;
+    } finally {
+      if (generation === leaderboardGeneration) leaderboard.loading = false;
+    }
+  }
+
+  return {
+    state,
+    leaderboard,
+    ready,
+    connecting,
+    openOnDevice,
+    connectDevice,
+    reconnect,
+    send,
+    refreshState,
+    loadLeaderboard,
+  };
 }
 
 async function openMpsApp(target: DeviceInfo) {
@@ -497,4 +553,34 @@ function errorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : String(error || t('status.unknownError'));
   if (/requires device binding|\/attachdevice/i.test(message)) return t('status.deviceBindingRequired');
   return message;
+}
+
+function normalizeLeaderboardRow(value: any): LeaderboardRow | null {
+  if (!value?.left?.userId || !value?.right?.userId) return null;
+  return {
+    left: normalizeLeaderboardPlayer(value.left),
+    right: normalizeLeaderboardPlayer(value.right),
+    games: Math.max(0, Math.floor(Number(value.games || 0))),
+    lastPlayedAt: Math.max(0, Math.floor(Number(value.lastPlayedAt || 0))),
+  };
+}
+
+function normalizeLeaderboardPlayer(value: any): LeaderboardPlayer {
+  return {
+    userId: String(value?.userId || ''),
+    name: String(value?.name || t('leaderboard.player')),
+    avatar: safeImageUrl(value?.avatar),
+    wins: Math.max(0, Math.floor(Number(value?.wins || 0))),
+  };
+}
+
+function safeImageUrl(value: unknown) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    const url = new URL(text);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : '';
+  } catch {
+    return '';
+  }
 }

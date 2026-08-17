@@ -40,6 +40,30 @@ export class BattleStore {
         user_id TEXT NOT NULL,
         activated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS battle_group_users (
+        chat_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL DEFAULT '',
+        avatar_url TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chat_id, user_id)
+      );
+      CREATE TABLE IF NOT EXISTS battle_matches (
+        chat_id TEXT NOT NULL,
+        round_id TEXT NOT NULL,
+        player_a_id TEXT NOT NULL,
+        player_b_id TEXT NOT NULL,
+        winner_id TEXT NOT NULL,
+        loser_id TEXT NOT NULL,
+        player_a_lines INTEGER NOT NULL DEFAULT 0,
+        player_b_lines INTEGER NOT NULL DEFAULT 0,
+        finished_at INTEGER NOT NULL,
+        PRIMARY KEY (chat_id, round_id)
+      );
+      CREATE INDEX IF NOT EXISTS battle_matches_chat_players
+        ON battle_matches (chat_id, player_a_id, player_b_id);
+      CREATE INDEX IF NOT EXISTS battle_matches_chat_finished
+        ON battle_matches (chat_id, finished_at DESC);
     `);
   }
 
@@ -380,6 +404,92 @@ export class BattleStore {
       UPDATE battle_players SET command_acked = 1, updated_at = ?
       WHERE chat_id = ? AND user_id = ? AND round_id = ? AND pending_command_id = ?
     `).run(now, String(chatId), String(userId), String(transId), String(commandId)).changes) > 0;
+  }
+
+  upsertGroupUser(chatId, profile, now = Date.now()) {
+    const id = required(chatId, "chatId");
+    const userId = required(profile?.userId, "userId");
+    const userName = String(profile?.userName || "").trim();
+    const avatarUrl = String(profile?.avatarUrl || "").trim();
+    this.db.prepare(`
+      INSERT INTO battle_group_users (
+        chat_id, user_id, user_name, avatar_url, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chat_id, user_id) DO UPDATE SET
+        user_name = CASE
+          WHEN excluded.user_name <> '' THEN excluded.user_name
+          ELSE battle_group_users.user_name
+        END,
+        avatar_url = CASE
+          WHEN excluded.avatar_url <> '' THEN excluded.avatar_url
+          ELSE battle_group_users.avatar_url
+        END,
+        updated_at = excluded.updated_at
+    `).run(id, userId, userName, avatarUrl, Number(now));
+    return this.groupUser(id, userId);
+  }
+
+  groupUser(chatId, userId) {
+    return this.db.prepare(`
+      SELECT chat_id, user_id, user_name, avatar_url, updated_at
+      FROM battle_group_users
+      WHERE chat_id = ? AND user_id = ?
+    `).get(String(chatId || ""), String(userId || "")) || null;
+  }
+
+  recordMatch(chatId, roundId, winner, loser, now = Date.now()) {
+    const id = required(chatId, "chatId");
+    const rid = required(roundId, "roundId");
+    const winnerId = required(winner?.user_id, "winner.user_id");
+    const loserId = required(loser?.user_id, "loser.user_id");
+    if (winnerId === loserId) throw new Error("Battle match requires two different users");
+    const [playerAId, playerBId] = [winnerId, loserId].sort();
+    const playerALines = playerAId === winnerId ? winner.lines : loser.lines;
+    const playerBLines = playerBId === winnerId ? winner.lines : loser.lines;
+    const result = this.db.prepare(`
+      INSERT INTO battle_matches (
+        chat_id, round_id, player_a_id, player_b_id, winner_id, loser_id,
+        player_a_lines, player_b_lines, finished_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(chat_id, round_id) DO NOTHING
+    `).run(
+      id,
+      rid,
+      playerAId,
+      playerBId,
+      winnerId,
+      loserId,
+      Math.max(0, Math.floor(Number(playerALines || 0))),
+      Math.max(0, Math.floor(Number(playerBLines || 0))),
+      Number(now),
+    );
+    return Number(result.changes) === 1;
+  }
+
+  leaderboard(chatId) {
+    return this.db.prepare(`
+      SELECT
+        matches.player_a_id,
+        matches.player_b_id,
+        COALESCE(player_a.user_name, '') AS player_a_name,
+        COALESCE(player_b.user_name, '') AS player_b_name,
+        COALESCE(player_a.avatar_url, '') AS player_a_avatar,
+        COALESCE(player_b.avatar_url, '') AS player_b_avatar,
+        SUM(CASE WHEN matches.winner_id = matches.player_a_id THEN 1 ELSE 0 END) AS player_a_wins,
+        SUM(CASE WHEN matches.winner_id = matches.player_b_id THEN 1 ELSE 0 END) AS player_b_wins,
+        COUNT(*) AS games,
+        MAX(matches.finished_at) AS last_played_at
+      FROM battle_matches AS matches
+      LEFT JOIN battle_group_users AS player_a
+        ON player_a.chat_id = matches.chat_id
+       AND player_a.user_id = matches.player_a_id
+      LEFT JOIN battle_group_users AS player_b
+        ON player_b.chat_id = matches.chat_id
+       AND player_b.user_id = matches.player_b_id
+      WHERE matches.chat_id = ?
+      GROUP BY matches.player_a_id, matches.player_b_id
+      ORDER BY games DESC, last_played_at DESC
+    `).all(String(chatId || ""));
   }
 
   close() {

@@ -63,6 +63,7 @@ bot.on("message:bind_device", async (ctx) => {
       boundDevices: ctx.message?.attachedDevices,
     });
     battleLog("binding.snapshot", { chatId: chatIdFromContext(ctx), players: playerStates(players) });
+    rememberContextUser(ctx);
     const userId = userIdFromContext(ctx);
     const connectedPlayer = players.find((player) => player.user_id === userId);
     const disconnectedPlayer = previous.find((player) => player.user_id === userId);
@@ -162,11 +163,24 @@ bot.onWebAppRequest("battle.getState", async (ctx) => {
   }
   const player = store.playerForUser(chatId, userId);
   if (!player) throw webAppAccessError("当前用户不在本场对战中");
+  rememberContextUser(ctx);
   return {
     gameState: player.game_state,
     result: player.result || "",
     lines: player.lines,
   };
+});
+
+bot.onWebAppRequest("battle.getLeaderboard", async (ctx) => {
+  const chatId = chatIdFromContext(ctx);
+  const userId = userIdFromContext(ctx);
+  if (!isGroupChat(ctx) || !chatId || !userId) {
+    throw webAppAccessError("无法识别当前对战群");
+  }
+  rememberContextUser(ctx);
+  const rows = leaderboardRows(store.leaderboard(chatId), userId);
+  battleLog("webapp.leaderboard", { chatId, userId, rowCount: rows.length });
+  return { groupName: String(ctx.chat?.name || ""), rows };
 });
 
 let eventChain = Promise.resolve();
@@ -207,6 +221,12 @@ async function syncBindingSnapshot(ctx, options = {}) {
   }));
   if (options.validateBattle) validateBattleSnapshot(snapshot);
   const players = store.replaceSnapshot(chatId, snapshot);
+  for (const player of snapshot) {
+    store.upsertGroupUser(chatId, {
+      userId: player.userId,
+      userName: player.userName,
+    });
+  }
   return { devices, players };
 }
 
@@ -375,6 +395,22 @@ async function finishRound(chatId, endedUserId) {
 
   store.setResult(chatId, winner.user_id, "win");
   store.setResult(chatId, loser.user_id, "lose");
+  try {
+    store.upsertGroupUser(chatId, { userId: winner.user_id, userName: winner.user_name });
+    store.upsertGroupUser(chatId, { userId: loser.user_id, userName: loser.user_name });
+    const recorded = store.recordMatch(chatId, winner.round_id || loser.round_id, winner, loser);
+    battleLog("leaderboard.matchRecorded", {
+      chatId,
+      roundId: winner.round_id || loser.round_id,
+      winnerId: winner.user_id,
+      loserId: loser.user_id,
+      recorded,
+    });
+  } catch (error) {
+    // Leaderboard persistence is additive and must never block the existing
+    // result delivery path.
+    battleLog("leaderboard.matchRecordFailed", { chatId, error: errorMessage(error) });
+  }
   schedulePushes([
     issueCommand(store.playerForUser(chatId, winner.user_id), "WIN"),
     issueCommand(store.playerForUser(chatId, loser.user_id), "LOSE"),
@@ -540,6 +576,62 @@ function playerStates(players) {
     pendingCommandId: player.pending_command_id,
     commandAcked: Boolean(player.command_acked),
   }));
+}
+
+function rememberContextUser(ctx) {
+  const chatId = chatIdFromContext(ctx);
+  const userId = userIdFromContext(ctx);
+  if (!chatId || !userId || String(ctx.from?.type || "user") !== "user") return null;
+  return store.upsertGroupUser(chatId, {
+    userId,
+    userName: String(ctx.from?.name || ""),
+    avatarUrl: safeAvatarUrl(ctx.from?.avatar),
+  });
+}
+
+function safeAvatarUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try {
+    const parsed = new URL(text);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function leaderboardRows(rows, viewerId) {
+  return rows.map((row) => {
+    let left = {
+      userId: row.player_a_id,
+      name: row.player_a_name || shortUserName(row.player_a_id),
+      avatar: row.player_a_avatar || "",
+      wins: Number(row.player_a_wins || 0),
+    };
+    let right = {
+      userId: row.player_b_id,
+      name: row.player_b_name || shortUserName(row.player_b_id),
+      avatar: row.player_b_avatar || "",
+      wins: Number(row.player_b_wins || 0),
+    };
+    if (
+      (right.userId === viewerId && left.userId !== viewerId)
+      || (left.userId !== viewerId && right.userId !== viewerId && right.wins > left.wins)
+    ) {
+      [left, right] = [right, left];
+    }
+    return {
+      left,
+      right,
+      games: Number(row.games || 0),
+      lastPlayedAt: Number(row.last_played_at || 0),
+    };
+  });
+}
+
+function shortUserName(userId) {
+  const value = String(userId || "player");
+  return value.length > 12 ? `${value.slice(0, 9)}…` : value;
 }
 
 function battleLog(event, data = {}) {

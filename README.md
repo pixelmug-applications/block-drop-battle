@@ -12,6 +12,17 @@
 6. 任一玩家结束时，Bot 判定胜负，两台设备显示 `WIN` / `LOSE` 和各自的消除行数。
 7. 点击重新开始回到 `JOIN`，开始下一轮。
 
+## 群组对战榜
+
+WebApp 提供“游戏”和“对战榜”两个视图。每局胜负确定后，Bot 会在不影响
+WIN/LOSE 下发的前提下记录本局历史，并按玩家组合汇总双方胜场。
+
+- 排行榜以 `chat_id` 隔离，同一玩家在不同群的成绩互不影响。
+- `(chat_id, round_id)` 唯一约束保证重复 GAME_OVER 不会重复计分。
+- 玩家解绑或更换设备不会删除历史成绩。
+- 用户名和头像保存为群内用户档案，并在绑定设备或打开 WebApp 时更新。
+- 排行榜通过 `battle.getLeaderboard` 读取 Bot 数据，不依赖 BLE 连接。
+
 ## 可靠消息协议
 
 游戏状态上报和命令下发都复用设备已有的 MQTT/TAL 通道，不需要额外 HTTP 服务或公网 Battle URL。
@@ -21,7 +32,7 @@
 ```text
 上报：BDB2|<trans_id>|<message_id>|<JOIN|READY|PLAYING|GAME_OVER>|<lines>
 确认：BDB2|<trans_id>|<message_id>|ACK|<command_message_id>
-下发：BDB2|<trans_id>|<message_id>|<GO|WIN|LOSE>
+下发：BDB2|<trans_id>|<message_id>|<P1_READY|P2_READY|GO|WIN|LOSE>
 ```
 
 - `trans_id`：一轮 Battle 的唯一事务 ID。两名玩家 READY 后由 Bot 生成，并通过 GO 命令同步给两台设备。

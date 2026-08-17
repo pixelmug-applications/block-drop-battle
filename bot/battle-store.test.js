@@ -212,3 +212,75 @@ test("deduplicates transport messages and acknowledges commands per battle trans
     item.close();
   }
 });
+
+test("stores group profiles without erasing a known avatar", () => {
+  const item = fixture();
+  try {
+    item.store.upsertGroupUser("group-1", {
+      userId: "user-a",
+      userName: "Alice",
+      avatarUrl: "https://example.com/alice.png",
+    }, 100);
+    item.store.upsertGroupUser("group-1", { userId: "user-a", userName: "Alice 2" }, 200);
+    assert.deepEqual({ ...item.store.groupUser("group-1", "user-a") }, {
+      chat_id: "group-1",
+      user_id: "user-a",
+      user_name: "Alice 2",
+      avatar_url: "https://example.com/alice.png",
+      updated_at: 200,
+    });
+  } finally {
+    item.close();
+  }
+});
+
+test("aggregates match wins once per round and isolates groups", () => {
+  const item = fixture();
+  try {
+    item.store.upsertGroupUser("group-1", { userId: "user-a", userName: "Alice" });
+    item.store.upsertGroupUser("group-1", { userId: "user-b", userName: "Bob" });
+    const alice = { user_id: "user-a", lines: 8 };
+    const bob = { user_id: "user-b", lines: 5 };
+
+    assert.equal(item.store.recordMatch("group-1", "round-1", alice, bob, 100), true);
+    assert.equal(item.store.recordMatch("group-1", "round-1", alice, bob, 100), false);
+    assert.equal(item.store.recordMatch("group-1", "round-2", bob, alice, 200), true);
+    assert.equal(item.store.recordMatch("group-1", "round-3", alice, bob, 300), true);
+    assert.equal(item.store.recordMatch("group-2", "round-1", bob, alice, 400), true);
+
+    assert.deepEqual(item.store.leaderboard("group-1").map((row) => ({ ...row })), [{
+      player_a_id: "user-a",
+      player_b_id: "user-b",
+      player_a_name: "Alice",
+      player_b_name: "Bob",
+      player_a_avatar: "",
+      player_b_avatar: "",
+      player_a_wins: 2,
+      player_b_wins: 1,
+      games: 3,
+      last_played_at: 300,
+    }]);
+    assert.equal(item.store.leaderboard("group-2")[0].games, 1);
+    assert.equal(item.store.leaderboard("missing-group").length, 0);
+  } finally {
+    item.close();
+  }
+});
+
+test("leaderboard history survives current binding removal", () => {
+  const item = fixture();
+  try {
+    item.store.replaceSnapshot("group-1", players);
+    item.store.recordMatch(
+      "group-1",
+      "round-1",
+      { user_id: "user-a", lines: 4 },
+      { user_id: "user-b", lines: 2 },
+    );
+    item.store.replaceSnapshot("group-1", []);
+    assert.equal(item.store.players("group-1").length, 0);
+    assert.equal(item.store.leaderboard("group-1")[0].player_a_wins, 1);
+  } finally {
+    item.close();
+  }
+});

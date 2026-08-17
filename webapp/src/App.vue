@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useBlockDropDevice, type BlockDropCommand } from './device';
+import { useBlockDropDevice, type BlockDropCommand, type LeaderboardPlayer } from './device';
 import { t } from './i18n';
 
 const game = useBlockDropDevice();
@@ -9,6 +9,7 @@ const prepared = ref(false);
 const busy = ref(false);
 const error = ref('');
 const pressed = ref<BlockDropCommand | ''>('');
+const activeView = ref<'game' | 'leaderboard'>('game');
 let repeatTimer: number | undefined;
 let bleCountdownTimer: number | undefined;
 let stateSyncTimer: number | undefined;
@@ -88,7 +89,23 @@ function stopHold() {
 function refreshAfterResume() {
   if (!entered.value || document.visibilityState === 'hidden') return;
   window.clearTimeout(resumeRefreshTimer);
-  resumeRefreshTimer = window.setTimeout(() => void game.refreshState(true), 150);
+  resumeRefreshTimer = window.setTimeout(() => {
+    if (activeView.value === 'leaderboard') void game.loadLeaderboard(true);
+    else void game.refreshState(true);
+  }, 150);
+}
+
+function switchView(view: 'game' | 'leaderboard') {
+  activeView.value = view;
+  if (view === 'leaderboard') void game.loadLeaderboard();
+}
+
+function playerInitial(player: LeaderboardPlayer) {
+  return Array.from(player.name.trim() || '?')[0]?.toUpperCase() || '?';
+}
+
+function hideBrokenAvatar(player: LeaderboardPlayer) {
+  player.avatar = '';
 }
 
 watch(
@@ -152,7 +169,13 @@ onBeforeUnmount(() => {
     </section>
   </main>
 
-  <main v-else class="controller" :class="{ offline: !game.ready.value }">
+  <template v-else>
+    <nav class="view-tabs" aria-label="Battle views">
+      <button :class="{ active: activeView === 'game' }" @click="switchView('game')">{{ t('tabs.game') }}</button>
+      <button :class="{ active: activeView === 'leaderboard' }" @click="switchView('leaderboard')">{{ t('tabs.leaderboard') }}</button>
+    </nav>
+
+  <main v-if="activeView === 'game'" class="controller" :class="{ offline: !game.ready.value }">
     <section class="utility-row">
       <button
         class="small green"
@@ -189,4 +212,65 @@ onBeforeUnmount(() => {
       <button class="round blue down" :class="{ pressed: pressed === 'DOWN' }" :disabled="!canPlay" @pointerdown.prevent="hold('DOWN', $event)" @pointerup.prevent="stopHold" @pointercancel.prevent="stopHold"><i />{{ t('game.down') }}</button>
     </section>
   </main>
+
+  <main v-else class="leaderboard-page">
+    <header class="leaderboard-hero">
+      <div class="pixel-crown" aria-hidden="true">♛</div>
+      <h2>{{ t('leaderboard.title') }}</h2>
+      <p>{{ t('leaderboard.subtitle') }}</p>
+      <strong v-if="game.leaderboard.groupName">{{ game.leaderboard.groupName }}</strong>
+      <i class="hero-block block-a" /><i class="hero-block block-b" />
+      <i class="hero-block block-c" /><i class="hero-block block-d" />
+    </header>
+
+    <section class="leaderboard-content">
+      <button
+        class="leaderboard-refresh"
+        :disabled="game.leaderboard.loading"
+        @click="game.loadLeaderboard(true)"
+      >↻ {{ t('leaderboard.refresh') }}</button>
+
+      <p v-if="game.leaderboard.loading && !game.leaderboard.rows.length" class="leaderboard-status">
+        {{ t('leaderboard.loading') }}
+      </p>
+      <p v-else-if="game.leaderboard.error && !game.leaderboard.rows.length" class="leaderboard-status error">
+        {{ game.leaderboard.error }}
+      </p>
+      <p v-else-if="!game.leaderboard.rows.length" class="leaderboard-status">
+        {{ t('leaderboard.empty') }}
+      </p>
+
+      <div v-else class="leaderboard-list">
+        <article v-for="row in game.leaderboard.rows" :key="`${row.left.userId}:${row.right.userId}`" class="matchup-card">
+          <div class="rank-player left-player">
+            <div class="rank-avatar">
+              <span>{{ playerInitial(row.left) }}</span>
+              <img v-if="row.left.avatar" :src="row.left.avatar" :alt="row.left.name" @error="hideBrokenAvatar(row.left)" />
+            </div>
+            <div class="rank-identity">
+              <b>{{ row.left.name }}</b>
+              <strong>{{ row.left.wins }}</strong>
+            </div>
+          </div>
+
+          <div class="rank-pk">
+            <span>PK</span>
+            <small>{{ t('leaderboard.games', { games: row.games }) }}</small>
+          </div>
+
+          <div class="rank-player right-player">
+            <div class="rank-identity">
+              <b>{{ row.right.name }}</b>
+              <strong>{{ row.right.wins }}</strong>
+            </div>
+            <div class="rank-avatar">
+              <span>{{ playerInitial(row.right) }}</span>
+              <img v-if="row.right.avatar" :src="row.right.avatar" :alt="row.right.name" @error="hideBrokenAvatar(row.right)" />
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+  </template>
 </template>
