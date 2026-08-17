@@ -324,3 +324,20 @@ test("personal best only increases and is isolated and ranked by group", () => {
     item.close();
   }
 });
+
+test("personal leaderboard only returns the top ten players", () => {
+  const item = fixture();
+  try {
+    for (let index = 1; index <= 12; index += 1) {
+      const userId = `user-${String(index).padStart(2, "0")}`;
+      item.store.recordPersonalBest("group-1", userId, index, index);
+    }
+
+    const rows = item.store.personalLeaderboard("group-1");
+    assert.equal(rows.length, 10);
+    assert.equal(rows[0].best_lines, 12);
+    assert.equal(rows[9].best_lines, 3);
+  } finally {
+    item.close();
+  }
+});

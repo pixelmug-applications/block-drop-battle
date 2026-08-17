@@ -530,6 +530,7 @@ export class BattleStore {
        AND users.user_id = scores.user_id
       WHERE scores.chat_id = ?
       ORDER BY scores.best_lines DESC, scores.updated_at ASC, scores.user_id ASC
+      LIMIT 10
     `).all(String(chatId || ""));
   }
 
