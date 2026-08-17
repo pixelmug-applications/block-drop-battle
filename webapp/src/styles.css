@@ -163,15 +163,6 @@ button:disabled { cursor: default; }
   -webkit-text-stroke: 2px #0b0903;
   text-shadow: 0 5px 0 #f3c400, 4px 7px 0 #0b0903;
 }
-.leaderboard-hero strong {
-  max-width: min(360px, 72vw);
-  margin-top: 7px;
-  overflow: hidden;
-  color: #d2c994;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .hero-block { position: absolute; width: 12px; height: 12px; background: #ffd000; box-shadow: 12px 0 #ffd000, 0 12px #ffd000; }
 .hero-block.block-a { top: 38px; left: 7%; transform: rotate(90deg); }
 .hero-block.block-b { top: 48px; right: 8%; background: #9c43ff; box-shadow: 12px 0 #9c43ff, 0 12px #9c43ff; }
