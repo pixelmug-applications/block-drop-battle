@@ -9,13 +9,15 @@
 3. 执行 `/battle`。用户点击 inline keyboard 时，Bot 检查群聊、两个设备槽、设备所有者和点击用户，通过后才提供 WebApp 入口。
 4. WebApp 再次读取共享绑定快照，只在点击用户自己的设备上安装 MPS。
 5. MPY 初始显示 `JOIN`；点击加入后显示 `READY`。两台设备都准备好后显示 `GO`。
-6. 任一玩家结束时，Bot 判定胜负，两台设备显示 `WIN` / `LOSE` 和各自的消除行数。
-7. 点击重新开始回到 `JOIN`，开始下一轮。
+6. 每位玩家都持续游戏到 `GAME_OVER`；双方结束后，Bot 按最终消除行数判定胜负，两台设备显示 `WIN` / `LOSE` 和各自的消除行数。
+7. 双方消除行数相同时显示 `DRAW`，该局不写入对战榜，也不改变任何玩家的胜局数。
+8. 如果一方始终停留在 `GO`、没有开始游戏，另一方 `GAME_OVER` 时未开始的一方自动按 0 行判负。
+9. 点击重新开始回到 `JOIN`，开始下一轮。
 
 ## 群组对战榜
 
-WebApp 提供“游戏”和“对战榜”两个视图。每局胜负确定后，Bot 会在不影响
-WIN/LOSE 下发的前提下记录本局历史，并按玩家组合汇总双方胜场。
+WebApp 提供“游戏”和“对战榜”两个视图。每局产生胜负后，Bot 会在不影响
+WIN/LOSE 下发的前提下记录本局历史，并按玩家组合汇总双方胜场；平局不记录。
 
 - 排行榜以 `chat_id` 隔离，同一玩家在不同群的成绩互不影响。
 - `(chat_id, round_id)` 唯一约束保证重复 GAME_OVER 不会重复计分。
@@ -32,15 +34,15 @@ WIN/LOSE 下发的前提下记录本局历史，并按玩家组合汇总双方�
 ```text
 上报：BDB2|<trans_id>|<message_id>|<JOIN|READY|PLAYING|GAME_OVER>|<lines>
 确认：BDB2|<trans_id>|<message_id>|ACK|<command_message_id>
-下发：BDB2|<trans_id>|<message_id>|<P1_READY|P2_READY|GO|WIN|LOSE>
+下发：BDB2|<trans_id>|<message_id>|<P1_READY|P2_READY|GO|WIN|LOSE|DRAW>
 ```
 
 - `trans_id`：一轮 Battle 的唯一事务 ID。两名玩家 READY 后由 Bot 生成，并通过 GO 命令同步给两台设备。
 - `message_id`：状态或命令的唯一消息 ID。重发保持同一个 ID，接收端据此幂等去重。
 - READY 每 250ms 重发，直到收到 GO。
 - PLAYING 每 500ms 发送同一消息作为低频心跳，保证开始状态和胜负命令丢失时能够快速补发。
-- GAME_OVER 每 250ms 重发，直到收到 WIN/LOSE。
-- MPY 对 GO/WIN/LOSE 上报 ACK；Bot 在 SQLite 中持久化待确认命令和 ACK 状态。
+- GAME_OVER 每 250ms 重发，直到收到 WIN/LOSE/DRAW。
+- MPY 对 GO/WIN/LOSE/DRAW 上报 ACK；Bot 在 SQLite 中持久化待确认命令和 ACK 状态。
 - Bot 的 push RPC 返回失败时会记录日志，下一次状态重发/心跳会再次发送相同命令 ID。
 
 Bot 使用全新的 `bot/data/battle.sqlite` 保存群聊、用户、设备、slot、游戏状态、结果、事务 ID、消息 ID、待确认命令和 ACK 状态；开发阶段不迁移或兼容旧数据库。

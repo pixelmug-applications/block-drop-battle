@@ -66,6 +66,7 @@ const actionLabel = computed(() => {
   if (game.state.gameState === 'playing') return t('game.playing');
   if (game.state.gameState === 'win') return t('game.win');
   if (game.state.gameState === 'lose') return t('game.lose');
+  if (game.state.gameState === 'draw') return t('game.draw');
   return t('game.finished');
 });
 
@@ -73,9 +74,9 @@ const canPlay = computed(() => game.canControl.value && game.ready.value && game
 const canPrimaryAction = computed(() => {
   if (!game.canControl.value) return false;
   if (['join', 'go'].includes(game.state.gameState)) return game.ready.value;
-  return ['ready', 'playing', 'finished', 'win', 'lose'].includes(game.state.gameState);
+  return ['ready', 'playing', 'finished', 'win', 'lose', 'draw'].includes(game.state.gameState);
 });
-const canRestart = computed(() => game.canControl.value && game.ready.value && ['win', 'lose'].includes(game.state.gameState));
+const canRestart = computed(() => game.canControl.value && game.ready.value && ['win', 'lose', 'draw'].includes(game.state.gameState));
 
 function hold(command: 'LEFT' | 'RIGHT' | 'DOWN', event: PointerEvent) {
   (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);

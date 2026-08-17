@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { BubbleBot, InlineKeyboard } from "../../jeejio-bubble/sdk/BubbleSDK.js";
 import PixelMugS1 from "../../jeejio-bubble/devices/ext/PixelMugS1_1.0.ext.js";
 import { BattleStore } from "./battle-store.js";
+import { resolveRoundOutcome } from "./battle-rules.js";
 import { apiBaseUrl, token, mpsID, mpsVersion } from "./config.dev.js";
 
 const port = Number(process.env.WEBAPP_PORT || 8820);
@@ -397,27 +398,31 @@ function syncReadyDisplay(chatId) {
 
 async function finishRound(chatId, endedUserId) {
   const players = store.players(chatId);
-  const ended = players.find((item) => item.user_id === endedUserId);
-  const opponent = players.find((item) => item.user_id !== endedUserId);
-  if (!ended || !opponent || ended.result || opponent.result) return;
+  const outcome = resolveRoundOutcome(players, endedUserId);
+  battleLog("round.finishCheck", { chatId, endedUserId, outcome, players: playerStates(players) });
+  if (outcome.status === "waiting") return;
 
-  let winner;
-  let loser;
-  if (opponent.game_state === "playing") {
-    winner = opponent;
-    loser = ended;
-  } else if (["join", "ready", "go"].includes(opponent.game_state)) {
-    winner = ended;
-    loser = opponent;
-  } else if (opponent.game_state === "finished") {
-    winner = ended.lines >= opponent.lines ? ended : opponent;
-    loser = winner.user_id === ended.user_id ? opponent : ended;
-  } else {
+  if (outcome.autoFinishUserId) {
+    store.updateState(chatId, outcome.autoFinishUserId, "finished", { lines: 0 });
+  }
+
+  if (outcome.status === "draw") {
+    for (const userId of outcome.playerIds) store.setResult(chatId, userId, "draw");
+    const drawnPlayers = outcome.playerIds.map((userId) => store.playerForUser(chatId, userId));
+    battleLog("round.draw", {
+      chatId,
+      roundId: drawnPlayers[0]?.round_id || drawnPlayers[1]?.round_id || "",
+      lines: drawnPlayers[0]?.lines || 0,
+      userIds: outcome.playerIds,
+    });
+    schedulePushes(drawnPlayers.map((player) => issueCommand(player, "DRAW")), 20);
     return;
   }
 
-  store.setResult(chatId, winner.user_id, "win");
-  store.setResult(chatId, loser.user_id, "lose");
+  store.setResult(chatId, outcome.winnerId, "win");
+  store.setResult(chatId, outcome.loserId, "lose");
+  const winner = store.playerForUser(chatId, outcome.winnerId);
+  const loser = store.playerForUser(chatId, outcome.loserId);
   try {
     store.upsertGroupUser(chatId, { userId: winner.user_id, userName: winner.user_name });
     store.upsertGroupUser(chatId, { userId: loser.user_id, userName: loser.user_name });
@@ -528,8 +533,8 @@ async function sendBindDevice(ctx) {
     "## 🏆 游戏规则",
     "",
     "- 每位玩家在自己的 PixelMug 上进行游戏。",
-    "- 先结束游戏的玩家判为输，对手获胜。",
-    "- 为防止作弊，如果一位玩家在对战中始终没有开始，另一位玩家结束游戏时，已开始游戏的玩家判为赢。",
+    "- 两位玩家都进行到游戏结束，并按最终消除行数判定胜负；行数相同则为平局。",
+    "- 如果一位玩家始终没有开始，另一位玩家结束时，未开始玩家按 0 行判负。",
     "",
     "## ✨ 让我们开始吧！",
   ].join("\n"), { mentionOnly: true });

@@ -43,6 +43,7 @@ STATE_PLAYING = "playing"
 STATE_FINISHED = "finished"
 STATE_WIN = "win"
 STATE_LOSE = "lose"
+STATE_DRAW = "draw"
 READY_REPORT_RETRY_MS = 250
 PLAYING_REPORT_RETRY_MS = 500
 FINISHED_REPORT_RETRY_MS = 250
@@ -307,7 +308,7 @@ class BlockDropBattleApp:
             self.start_game()
             return
         if command == "RESTART":
-            if self.state in (STATE_WIN, STATE_LOSE):
+            if self.state in (STATE_WIN, STATE_LOSE, STATE_DRAW):
                 self.reset_game(start=False)
             return
         if self.state != STATE_PLAYING:
@@ -364,7 +365,7 @@ class BlockDropBattleApp:
                     self.lock_piece()
                 self.last_drop_ms = now
         elif self.state == STATE_FINISHED and self.finished_report_pending:
-            # Retransmit the same GAME_OVER message id until WIN/LOSE arrives.
+            # Retransmit the same GAME_OVER message id until WIN/LOSE/DRAW arrives.
             if ticks_diff(now, self.last_state_report_ms) >= FINISHED_REPORT_RETRY_MS:
                 self.report_battle_event("BATTLE_GAME_OVER")
                 self.last_state_report_ms = now
@@ -379,8 +380,17 @@ class BlockDropBattleApp:
             self.draw_centered_text(2, "OVER", COL_RED)
             self.draw_centered_text(9, str(min(999, self.lines)), COL_WHITE)
             return
-        if self.state in (STATE_WIN, STATE_LOSE):
-            self.draw_centered_text(1, "WIN" if self.state == STATE_WIN else "LOSE", COL_YELLOW if self.state == STATE_WIN else COL_RED)
+        if self.state in (STATE_WIN, STATE_LOSE, STATE_DRAW):
+            if self.state == STATE_WIN:
+                label = "WIN"
+                color = COL_YELLOW
+            elif self.state == STATE_LOSE:
+                label = "LOSE"
+                color = COL_RED
+            else:
+                label = "DRAW"
+                color = COL_WHITE
+            self.draw_centered_text(1, label, color)
             self.draw_centered_text(9, str(min(999, self.lines)), COL_WHITE)
             return
         self.draw_walls()
@@ -645,6 +655,16 @@ class BlockDropBattleApp:
             self.result = "lose"
             self.piece = None
             self.publish_state("blockDropBattleLose")
+            accepted = True
+        elif command == "DRAW" and trans_id == self.transport_trans_id:
+            self.finished_report_pending = False
+            self.playing_report_pending = False
+            self.pending_event_name = ""
+            self.pending_event_message_id = ""
+            self.state = STATE_DRAW
+            self.result = "draw"
+            self.piece = None
+            self.publish_state("blockDropBattleDraw")
             accepted = True
         if accepted:
             self.report_command_ack(command_message_id)

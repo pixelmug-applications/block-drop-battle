@@ -92,7 +92,7 @@ const lastMpsErrorByDevice = new Map<string, string>();
 const MPS_OPEN_TIMEOUT_MS = 45000;
 const READY_EVENTS = new Set(['MPS_IS_RUNNING']);
 const FAILED_EVENTS = new Set(['INSTALL_FAIL', 'RUNNING_FAIL']);
-const TERMINAL_GAME_STATES = new Set(['win', 'lose']);
+const TERMINAL_GAME_STATES = new Set(['win', 'lose', 'draw']);
 
 function protocolClient() {
   if (!client) {
