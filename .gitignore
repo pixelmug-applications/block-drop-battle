@@ -1,0 +1,12 @@
+node_modules/
+webapp/node_modules/
+dist/
+webapp/dist/
+mpy/dist/
+*.mps
+__pycache__/
+*.py[cod]
+*.log
+bot/data/
+bot/config.dev.js
+bot/config.pub.js

@@ -1,0 +1,14 @@
+{
+  "name": "mps-block-drop-battle",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npm --prefix webapp run dev",
+    "build": "npm --prefix webapp run build",
+    "bot": "node bot/block-drop-battle-bot.js",
+    "preview": "npm --prefix webapp run preview",
+    "test": "node --test bot/*.test.js"
+  },
+  "engines": { "node": ">=24" }
+}
