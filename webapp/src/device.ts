@@ -1,6 +1,6 @@
 import { computed, reactive } from 'vue';
-import { BubbleWebApp } from '../../../jeejio-bubble/sdk/WebApp.js';
-import { BleAppClient } from '../../../jeejio-bubble/sdk/BleAppClient.js';
+import { BubbleWebApp } from '@jeejio-bubble/bot/sdk/WebApp.js';
+import { BleAppClient } from '@jeejio-bubble/bot/sdk/BleAppClient.js';
 import { t } from './i18n';
 
 export type DeviceInfo = {
@@ -371,43 +371,39 @@ async function openMpsApp(target: DeviceInfo) {
   bindMpsEvents();
   lastInstallErrorCode = '';
   await webApp.subscribeDeviceEvents(target);
-  const ready = waitForMpsRunning(target);
-
-  let response: unknown;
   try {
-    response = await webApp.callDevice(target, {
+    const ready = waitForMpsRunning(target);
+    const response = await webApp.callDevice(target, {
       method: 'talMpyExecOneScript',
       params: { id: config.id, version: config.version },
     });
-  } catch (error) {
-    clearPendingLaunch();
-    throw error;
-  }
-
-  const code = mpyExecReturnCode(response);
-  if (code === 264) {
-    clearPendingLaunch();
-    state.launchPhase = 'ready';
-    return;
-  }
-  if (code === 263 || code === 265) {
-    state.launchPhase = 'switching';
-    state.message = t('status.switching');
-  } else if (code === 260 || code === 261 || code === 262) {
-    state.launchPhase = 'preparing';
-    state.message = t('status.preparing');
-  } else {
-    clearPendingLaunch();
-    state.launchPhase = 'failed';
-    throw new Error(t('status.openFailed', { code: Number.isFinite(code) ? code : 'unknown' }));
-  }
-
-  try {
+    const code = mpyExecReturnCode(response);
+    if (code === 264) {
+      state.launchPhase = 'ready';
+      return;
+    }
+    if (code === 263 || code === 265) {
+      state.launchPhase = 'switching';
+      state.message = t('status.switching');
+    } else if (code === 260 || code === 261 || code === 262) {
+      state.launchPhase = 'preparing';
+      state.message = t('status.preparing');
+    } else {
+      state.launchPhase = 'failed';
+      throw new Error(t('status.openFailed', { code: Number.isFinite(code) ? code : 'unknown' }));
+    }
     await ready;
     state.launchPhase = 'ready';
   } catch (error) {
     state.launchPhase = 'failed';
     throw error;
+  } finally {
+    clearPendingLaunch();
+    // Only the install/start handshake needs cloud device notifications. Game
+    // updates use BLE; keeping this subscription forwards every battle report
+    // through the Bot and can delay unrelated WebApp requests.
+    void webApp.unsubscribeDeviceEvents(target, { timeoutMillis: 5000 })
+      .catch((error: unknown) => console.warn('[BlockDropBattle] device event unsubscribe failed', error));
   }
 }
 
@@ -584,14 +580,14 @@ function rawDevice(item: DeviceInfo) {
 function launchConfig() {
   const params = new URLSearchParams(location.search);
   return {
-    id: cleanLaunchParam(battleResolution?.mps?.id || params.get('mps_id'), import.meta.env.VITE_MPS_ID || ''),
-    version: cleanLaunchParam(battleResolution?.mps?.version || params.get('mps_version'), import.meta.env.VITE_MPS_VERSION || '1.1.1'),
+    id: cleanLaunchParam(battleResolution?.mps?.id || params.get('mps_id')),
+    version: cleanLaunchParam(battleResolution?.mps?.version || params.get('mps_version')),
   };
 }
 
-function cleanLaunchParam(value: string | null, fallback: string) {
+function cleanLaunchParam(value: string | null) {
   const trimmed = String(value || '').trim();
-  if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return fallback;
+  if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return '';
   return trimmed;
 }
 

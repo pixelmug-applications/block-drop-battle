@@ -1,58 +1,171 @@
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
-import { extname, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BubbleBot, InlineKeyboard } from "../../jeejio-bubble/sdk/BubbleSDK.js";
-import PixelMugS1 from "../../jeejio-bubble/devices/ext/PixelMugS1_1.0.ext.js";
+import { BubbleBot, InlineKeyboard } from "@jeejio-bubble/bot/sdk";
+import PixelMugS1 from "@jeejio-bubble/bot/devices/pixelmug-s1/ext";
 import { BattleStore } from "./battle-store.js";
 import { resolveRoundOutcome } from "./battle-rules.js";
-import { apiBaseUrl, token, mpsID, mpsVersion } from "./config.dev.js";
+const token = requiredEnv("BOT_TOKEN");
+const mpsID = requiredEnv("STUDIO_MPS_ID");
+const mpsVersion = requiredEnv("STUDIO_MPS_VERSION");
+const webAppUrl = launchUrl(requiredEnv("STUDIO_WEBAPP_URL"));
 
-const port = Number(process.env.WEBAPP_PORT || 8820);
-const host = process.env.WEBAPP_HOST || process.env.HOST || "127.0.0.1";
-const baseUrl = process.env.WEBAPP_URL || `http://${host}:${port}/index.html`;
-const webAppUrl = launchUrl(baseUrl);
-const shouldServeStatic = !process.env.WEBAPP_URL;
-const store = new BattleStore(process.env.BATTLE_DB_PATH || resolve("bot/data/battle.sqlite"));
+const store = new BattleStore(
+  process.env.BATTLE_DB_PATH || fileURLToPath(new URL("./data/battle.sqlite", import.meta.url)),
+);
 const battleDebug = process.env.BATTLE_DEBUG !== "false";
 const pushInFlight = new Set();
-
-if (!token) throw new Error("Missing BUBBLE_BOT_TOKEN");
-if (!mpsID || !mpsVersion) throw new Error("Missing MPS_ID or MPS_VERSION");
+const lastCommandPushAt = new Map();
+const pendingPushTraces = new Map();
+const COMMAND_RETRY_INTERVAL_MS = 2000;
+const messages = {
+  "zh-CN": {
+    intro: "你好，我是方块掉落双人对战游戏智能体。我的主要功能是让两位玩家分别在自己的 PixelMug 上进行方块掉落对战，并记录胜负和排行榜。游戏需要两位玩家和我在同一个群聊中；开始之前，请先绑定两台 PixelMug。",
+    bindButton: "查看并绑定对战设备",
+    bindingConnected: "已关联",
+    bindingDisconnected: "已取消关联",
+    bindingNotice: "玩家 @{userName} {action} PixelMug。",
+    bindingUpdated: "PixelMug 关联信息已更新。",
+    bindingDeferred: "设备绑定已提交；对战资格会在打开 WebApp 时检查。",
+    commands: "命令：/bindDevice、/battle",
+    battleGroupRequired: "两位玩家和 Bot 必须在同一个群聊中，请到对战群里使用 /battle",
+    battleUserUnknown: "无法识别发起命令的用户",
+    battleButton: "打开我的对战手柄",
+    battleEntry: "两位玩家的 PixelMug 已绑定并在线，可以开始对战。",
+    battleStartFailed: "无法启动对战游戏：{error}",
+    webAppGroupOnly: "只能从对战群中打开此 WebApp",
+    spectatorNoDevice: "当前用户没有绑定本群的对战设备",
+    statePlayerUnknown: "无法识别当前对战玩家",
+    stateNotPlayer: "当前用户不在本场对战中",
+    rankingGroupUnknown: "无法识别当前对战群",
+    contextChatUnknown: "无法识别当前会话",
+    playerGroupRequired: "两位玩家和 Bot 必须在同一个群聊中",
+    webAppUserUnknown: "无法识别打开 WebApp 的用户",
+    playerNotOwner: "当前用户不是两个已绑定设备的所属用户",
+    playerFallback: "玩家",
+    noDevices: "当前群还没有关联 PixelMug，请先使用 /bindDevice 关联两台设备",
+    oneDevice: "当前群只有一个已关联的 PixelMug，还需要另一位玩家关联第二台设备",
+    wrongDeviceCount: "当前群关联了 {count} 台 PixelMug，对战必须恰好使用两台设备",
+    missingOwner: "设备绑定信息缺少所属用户",
+    sameOwner: "两台设备属于同一位玩家，必须由两个不同玩家分别关联设备",
+    sameDevice: "两个设备槽关联了同一台设备，必须关联两台不同设备",
+    missingSlots: "设备槽 1 和设备槽 2 必须全部关联",
+    offlineSlots: "设备槽 {slots} 的 PixelMug 当前离线，请连接设备后重试 /battle",
+    unknownOnlineSlots: "无法确认设备槽 {slots} 的 PixelMug 是否在线，请稍后重试 /battle",
+    bindGroupOnly: "双人对战的设备槽属于群聊。请先把两位玩家和 Bot 加入同一个群，然后在群里使用 /bindDevice。",
+    bindRules: "# 🎮 欢迎来到方块下落游戏（双人对战版）\n\n游戏需要在同一个冒泡群组中进行，两位玩家分别关联自己的 **PixelMug**。\n\n## 🏆 游戏规则\n\n- 每位玩家在自己的 PixelMug 上进行游戏。\n- 两位玩家都进行到游戏结束，并按最终消除行数判定胜负；行数相同则为平局。\n- 如果一位玩家始终没有开始，另一位玩家结束时，未开始玩家按 0 行判负。\n\n## ✨ 让我们开始吧！",
+    bindPrompt: "两位玩家请分别选择一个尚未占用的设备槽，并关联自己的 PixelMug。",
+    commandBind: "绑定两位玩家的 PixelMugS1",
+    commandBattle: "打开方块落下双人对战",
+    unknownError: "未知错误",
+    bindingRequired: "此应用需要绑定两台设备。请在群聊中使用 /bindDevice，分别绑定两位玩家的 PixelMug。",
+  },
+  "en-US": {
+    intro: "Hello, I am the Block Drop Battle game agent. I let two players battle on their own PixelMugs and keep track of results and leaderboards. Both players and I need to be in the same group; before you start, please bind two PixelMugs.",
+    bindButton: "Bind Battle PixelMugs",
+    bindingConnected: "has bound",
+    bindingDisconnected: "has unbound",
+    bindingNotice: "Player @{userName} {action} a PixelMug.",
+    bindingUpdated: "PixelMug bindings have been updated.",
+    bindingDeferred: "The device binding was submitted. Battle eligibility will be checked when the WebApp opens.",
+    commands: "Commands: /bindDevice, /battle",
+    battleGroupRequired: "Both players and the Bot must be in the same group. Use /battle in the battle group.",
+    battleUserUnknown: "Could not identify the player who requested the battle",
+    battleButton: "Open my battle controller",
+    battleEntry: "Both players' PixelMugs are bound and online. The battle is ready to start.",
+    battleStartFailed: "Could not start the battle: {error}",
+    webAppGroupOnly: "Open this WebApp from the battle group",
+    spectatorNoDevice: "You do not have a battle device bound in this group",
+    statePlayerUnknown: "Could not identify the current battle player",
+    stateNotPlayer: "You are not a player in this battle",
+    rankingGroupUnknown: "Could not identify the current battle group",
+    contextChatUnknown: "Could not identify the current chat",
+    playerGroupRequired: "Both players and the Bot must be in the same group",
+    webAppUserUnknown: "Could not identify the user opening the WebApp",
+    playerNotOwner: "You do not own either of the two bound battle devices",
+    playerFallback: "Player",
+    noDevices: "No PixelMug is bound in this group. Use /bindDevice to bind two devices.",
+    oneDevice: "Only one PixelMug is bound in this group. Another player must bind the second device.",
+    wrongDeviceCount: "This group has {count} bound PixelMugs; a battle requires exactly two.",
+    missingOwner: "A device binding has no owner",
+    sameOwner: "Both devices belong to the same player. Two different players must bind them.",
+    sameDevice: "Both slots refer to the same device. Bind two different devices.",
+    missingSlots: "Device slots 1 and 2 must both be bound",
+    offlineSlots: "The PixelMug in slot {slots} is offline. Connect it and retry /battle.",
+    unknownOnlineSlots: "The online status of the PixelMug in slot {slots} is unavailable. Retry /battle shortly.",
+    bindGroupOnly: "Battle device slots belong to a group chat. Add the Bot and both players to the same group, then use /bindDevice there.",
+    bindRules: "# 🎮 Welcome to Block Drop Battle\n\nTwo players in the same Bubble group each bind their own **PixelMug**.\n\n## 🏆 Rules\n\n- Each player plays on their own PixelMug.\n- The player who clears more lines wins; equal scores are a draw.\n- If one player never starts, they lose with zero lines when the other player finishes.\n\n## ✨ Get started",
+    bindPrompt: "Each player should select an available device slot and bind their own PixelMug.",
+    commandBind: "Bind both players' PixelMugS1 devices",
+    commandBattle: "Open Block Drop Battle",
+    unknownError: "Unknown error",
+    bindingRequired: "This battle requires two bound devices. Use /bindDevice in the group so each player can bind a PixelMug.",
+  },
+};
 
 // Two declarations create two required Bubble device slots.
 const pixelMug1 = new PixelMugS1();
 const pixelMug2 = new PixelMugS1();
-pixelMug1.name = "玩家 1 · PixelMugS1";
-pixelMug2.name = "玩家 2 · PixelMugS1";
+pixelMug1.name = "Player 1 · PixelMugS1";
+pixelMug2.name = "Player 2 · PixelMugS1";
 const pixelMugs = [pixelMug1, pixelMug2];
 const bot = new BubbleBot(token, {
-  apiBaseUrl,
-  debug: process.env.DEBUG !== "false",
+  apiBaseUrl: process.env.BOT_API_BASE_URL,
   observeWebAppDeviceCalls: true,
-  webAppDeviceAccess: "any",
+  webAppDeviceAccess: "all",
   group_policy: "open",
 });
 
 bot.registerDevices(pixelMugs);
 bot.on("error", async (ctx) => console.error("[block-drop-battle-bot]", ctx.error || ctx));
 bot.on("device_call:response", async (ctx) => {
+  const trace = pendingPushTraces.get(ctx.deviceCall?.traceId);
+  if (trace) pendingPushTraces.delete(ctx.deviceCall?.traceId);
   battleLog("push.asyncResponse", {
     traceId: ctx.deviceCall?.traceId,
+    command: trace?.command,
+    roundId: trace?.roundId,
+    elapsedMs: trace ? Date.now() - trace.startedAt : undefined,
     chatId: ctx.deviceCall?.chat?.id,
     slot: ctx.deviceCall?.slot,
     result: ctx.deviceCall?.result ?? ctx.deviceCall?.response?.tal?.result,
   });
 });
+bot.on("device_call:error", async (ctx) => {
+  const trace = pendingPushTraces.get(ctx.deviceCall?.traceId);
+  if (trace) pendingPushTraces.delete(ctx.deviceCall?.traceId);
+  battleLog("push.asyncError", {
+    traceId: ctx.deviceCall?.traceId,
+    command: trace?.command,
+    roundId: trace?.roundId,
+    elapsedMs: trace ? Date.now() - trace.startedAt : undefined,
+    chatId: ctx.deviceCall?.chat?.id,
+    slot: ctx.deviceCall?.slot,
+    method: ctx.deviceCall?.rpc?.method,
+    code: ctx.deviceCall?.code ?? ctx.deviceCall?.error?.code,
+    error: errorMessage(ctx.deviceCall?.error || ctx.error),
+    details: ctx.deviceCall?.error?.details || ctx.deviceCall?.response?.update,
+  });
+});
 bot.on("device_call:timeout", async (ctx) => {
+  const trace = pendingPushTraces.get(ctx.deviceCall?.traceId);
+  if (trace) pendingPushTraces.delete(ctx.deviceCall?.traceId);
   battleLog("push.asyncTimeout", {
     traceId: ctx.deviceCall?.traceId,
+    command: trace?.command,
+    roundId: trace?.roundId,
+    elapsedMs: trace ? Date.now() - trace.startedAt : undefined,
     chatId: ctx.deviceCall?.chat?.id,
     slot: ctx.deviceCall?.slot,
     timeoutMillis: ctx.deviceCall?.timeoutMillis,
   });
+});
+
+bot.on("contact_added", async (ctx) => {
+  await sendAddedIntro(ctx);
+});
+
+bot.on("joined_group", async (ctx) => {
+  await sendAddedIntro(ctx, { mentionOnly: false });
 });
 
 bot.on("message:bind_device", async (ctx) => {
@@ -69,15 +182,15 @@ bot.on("message:bind_device", async (ctx) => {
     const connectedPlayer = players.find((player) => player.user_id === userId);
     const disconnectedPlayer = previous.find((player) => player.user_id === userId);
     if (connectedPlayer) {
-      await sendBindingNotice(ctx, connectedPlayer, "已经关联", { public: true });
+      await sendBindingNotice(ctx, connectedPlayer, "bindingConnected", { public: true });
     } else if (disconnectedPlayer) {
-      await sendBindingNotice(ctx, disconnectedPlayer, "已取消关联", { public: true });
+      await sendBindingNotice(ctx, disconnectedPlayer, "bindingDisconnected", { public: true });
     } else {
-      await ctx.sendText("PixelMug 关联信息已更新。");
+      await ctx.sendText(messageFor(ctx, "bindingUpdated"));
     }
   } catch (error) {
     console.error("[block-drop-battle-bot] could not persist binding snapshot", error);
-    await ctx.sendText("设备绑定已提交；对战资格会在打开 WebApp 时检查。");
+    await ctx.sendText(messageFor(ctx, "bindingDeferred"));
   }
 });
 
@@ -91,24 +204,26 @@ bot.on("message", async (ctx) => {
     await sendBattleEntry(ctx);
     return;
   }
-  if (command) await ctx.sendText("命令：/bindDevice、/battle");
+  if (command) await ctx.sendText(messageFor(ctx, "commands"));
 });
 
 async function sendBattleEntry(ctx) {
   const userId = userIdFromContext(ctx);
   try {
-    if (!isGroupChat(ctx)) throw new Error("两位玩家和 Bot 必须在同一个群聊中，请到对战群里使用 /battle");
-    if (!userId) throw new Error("无法识别发起命令的用户");
+    if (!isGroupChat(ctx)) throw new Error(messageFor(ctx, "battleGroupRequired"));
+    if (!userId) throw new Error(messageFor(ctx, "battleUserUnknown"));
     rememberContextUser(ctx);
+    const { devices } = await syncBindingSnapshot(ctx, { validateBattle: true });
+    validateOnlineDevices(devices, ctx);
 
-    const keyboard = new InlineKeyboard().url("打开我的对战手柄", webAppUrl);
+    const keyboard = new InlineKeyboard().url(messageFor(ctx, "battleButton"), webAppUrl);
     await ctx.sendKeyboard(
-      "检查设备关联，启动对战游戏。\n\n**注意：必须两个不同玩家绑定不同设备才能进入游戏。**",
+      messageFor(ctx, "battleEntry"),
       keyboard,
       { mentionOnly: ctx.chat?.type === "group" ? true : undefined },
     );
   } catch (error) {
-    await ctx.sendText(`无法启动对战游戏：${errorMessage(error)}`);
+    await ctx.sendText(messageFor(ctx, "battleStartFailed", { error: errorMessage(error, ctx) }));
   }
 }
 
@@ -116,7 +231,7 @@ bot.onWebAppRequest("battle.getAccess", async (ctx) => {
   const chatId = chatIdFromContext(ctx);
   const userId = userIdFromContext(ctx);
   if (!isGroupChat(ctx) || !chatId || !userId) {
-    throw webAppAccessError("只能从对战群中打开此 WebApp");
+    throw webAppAccessError(messageFor(ctx, "webAppGroupOnly"));
   }
 
   rememberContextUser(ctx);
@@ -128,10 +243,10 @@ bot.onWebAppRequest("battle.getAccess", async (ctx) => {
     return {
       role: canPlay ? "player" : "spectator",
       canPlay,
-      reason: canPlay ? "" : "当前用户没有绑定本群的对战设备",
+      reason: canPlay ? "" : messageFor(ctx, "spectatorNoDevice"),
     };
   } catch (error) {
-    const reason = errorMessage(error);
+    const reason = errorMessage(error, ctx);
     battleLog("webapp.access", { chatId, userId, canPlay: false, reason });
     return { role: "spectator", canPlay: false, reason };
   }
@@ -183,10 +298,10 @@ bot.onWebAppRequest("battle.getState", async (ctx) => {
   const chatId = chatIdFromContext(ctx);
   const userId = userIdFromContext(ctx);
   if (!isGroupChat(ctx) || !chatId || !userId) {
-    throw webAppAccessError("无法识别当前对战玩家");
+    throw webAppAccessError(messageFor(ctx, "statePlayerUnknown"));
   }
   const player = store.playerForUser(chatId, userId);
-  if (!player) throw webAppAccessError("当前用户不在本场对战中");
+  if (!player) throw webAppAccessError(messageFor(ctx, "stateNotPlayer"));
   rememberContextUser(ctx);
   return {
     gameState: player.game_state,
@@ -196,14 +311,17 @@ bot.onWebAppRequest("battle.getState", async (ctx) => {
 });
 
 bot.onWebAppRequest("battle.getLeaderboard", async (ctx) => {
+  const startedAt = Date.now();
   const chatId = chatIdFromContext(ctx);
   const userId = userIdFromContext(ctx);
+  const requestId = String(ctx.webAppData?.id || "");
+  battleLog("webapp.leaderboard.request", { requestId, chatId, userId });
   if (!isGroupChat(ctx) || !chatId || !userId) {
-    throw webAppAccessError("无法识别当前对战群");
+    throw webAppAccessError(messageFor(ctx, "rankingGroupUnknown"));
   }
   rememberContextUser(ctx);
   const rows = leaderboardRows(store.leaderboard(chatId), userId);
-  battleLog("webapp.leaderboard", { chatId, userId, rowCount: rows.length });
+  battleLog("webapp.leaderboard", { requestId, chatId, userId, rowCount: rows.length, durationMs: Date.now() - startedAt });
   return { groupName: String(ctx.chat?.name || ""), rows };
 });
 
@@ -211,7 +329,7 @@ bot.onWebAppRequest("battle.getPersonalLeaderboard", async (ctx) => {
   const chatId = chatIdFromContext(ctx);
   const userId = userIdFromContext(ctx);
   if (!isGroupChat(ctx) || !chatId || !userId) {
-    throw webAppAccessError("无法识别当前对战群");
+    throw webAppAccessError(messageFor(ctx, "rankingGroupUnknown"));
   }
   rememberContextUser(ctx);
   const rows = personalLeaderboardRows(store.personalLeaderboard(chatId));
@@ -221,24 +339,35 @@ bot.onWebAppRequest("battle.getPersonalLeaderboard", async (ctx) => {
 
 let eventChain = Promise.resolve();
 bot.on("device_notify", async (ctx) => {
+  const arrivedAt = Date.now();
   eventChain = eventChain
-    .then(() => handleDeviceNotify(ctx))
+    .then(() => handleDeviceNotify(ctx, arrivedAt))
     .catch((error) => console.error("[block-drop-battle-bot] device event failed", error));
   await eventChain;
 });
 
 await bot.setCommands([
-  { command: "bindDevice", description: "绑定两位玩家的 PixelMugS1" },
-  { command: "battle", description: "打开方块落下双人对战" },
+  {
+    command: "bindDevice",
+    description: messages["en-US"].commandBind,
+    descTranslations: { "zh-CN": messages["zh-CN"].commandBind, en: messages["en-US"].commandBind },
+  },
+  {
+    command: "battle",
+    description: messages["en-US"].commandBattle,
+    descTranslations: { "zh-CN": messages["zh-CN"].commandBattle, en: messages["en-US"].commandBattle },
+  },
 ]);
-if (shouldServeStatic) await startStaticServer();
 await bot.start({ device: true });
 console.log("mps-block-drop-battle bot is running.");
+let studioRunId = "";
+try { studioRunId = String(JSON.parse(process.env.PIXELMUG_STUDIO_DEBUG || "{}").runId || ""); } catch {}
+battleLog("bot.started", { pid: process.pid, studioRunId });
 console.log(`WebApp URL: ${webAppUrl}`);
 
 async function syncBindingSnapshot(ctx, options = {}) {
   const chatId = chatIdFromContext(ctx);
-  if (!chatId) throw new Error("无法识别当前会话");
+  if (!chatId) throw new Error(messageFor(ctx, "contextChatUnknown"));
   // A bind-device event carries the post-change slot snapshot in
   // message.attachedDevices. Other callers reload the authoritative group list.
   const boundDevices = Array.isArray(options.boundDevices)
@@ -255,7 +384,7 @@ async function syncBindingSnapshot(ctx, options = {}) {
     slotId: String(device.slotId || ""),
     deviceName: String(device.name || "PixelMugS1"),
   }));
-  if (options.validateBattle) validateBattleSnapshot(snapshot);
+  if (options.validateBattle) validateBattleSnapshot(snapshot, ctx);
   const players = store.replaceSnapshot(chatId, snapshot);
   for (const player of snapshot) {
     store.upsertGroupUser(chatId, {
@@ -269,42 +398,56 @@ async function syncBindingSnapshot(ctx, options = {}) {
 async function authorizedBattlePlayer(ctx) {
   const chatId = chatIdFromContext(ctx);
   const userId = userIdFromContext(ctx);
-  if (!isGroupChat(ctx)) throw webAppAccessError("两位玩家和 Bot 必须在同一个群聊中");
-  if (!chatId || !userId) throw webAppAccessError("无法识别打开 WebApp 的用户");
+  if (!isGroupChat(ctx)) throw webAppAccessError(messageFor(ctx, "playerGroupRequired"));
+  if (!chatId || !userId) throw webAppAccessError(messageFor(ctx, "webAppUserUnknown"));
   // Always authorize against the server-side group slot list. WebApp payloads
   // are client-controlled and cannot establish ownership or routing.
   const { players } = await syncBindingSnapshot(ctx, { validateBattle: true });
   const player = players.find((item) => item.user_id === userId);
-  if (!player) throw webAppAccessError("当前用户不是两个已绑定设备的所属用户");
+  if (!player) throw webAppAccessError(messageFor(ctx, "playerNotOwner"));
   return { chatId, userId, player, players };
 }
 
-async function sendBindingNotice(ctx, player, action, options = {}) {
+async function sendBindingNotice(ctx, player, actionKey, options = {}) {
   const userId = String(player.user_id || "");
   const currentUserName = userId === userIdFromContext(ctx) ? ctx.from?.name : "";
-  const userName = String(player.user_name || currentUserName || "玩家");
-  await ctx.sendText(`玩家 @${userName} ${action} PixelMug。`, {
+  const userName = String(player.user_name || currentUserName || messageFor(ctx, "playerFallback"));
+  await ctx.sendText(messageFor(ctx, "bindingNotice", {
+    userName,
+    action: messageFor(ctx, actionKey),
+  }), {
     at: userId ? [userId] : undefined,
     mentionOnly: ctx.chat?.type === "group" ? !options.public : undefined,
   });
 }
 
-function validateBattleSnapshot(players) {
-  if (players.length === 0) throw new Error("当前群还没有关联 PixelMug，请先使用 /bindDevice 关联两台设备");
-  if (players.length === 1) throw new Error("当前群只有一个已关联的 PixelMug，还需要另一位玩家关联第二台设备");
-  if (players.length !== 2) throw new Error(`当前群关联了 ${players.length} 台 PixelMug，对战必须恰好使用两台设备`);
-  if (players.some((item) => !item.userId)) throw new Error("设备绑定信息缺少所属用户");
-  if (new Set(players.map((item) => item.userId)).size !== 2) throw new Error("两台设备属于同一位玩家，必须由两个不同玩家分别关联设备");
-  if (new Set(players.map((item) => item.deviceId)).size !== 2) throw new Error("两个设备槽关联了同一台设备，必须关联两台不同设备");
+function validateBattleSnapshot(players, ctx) {
+  if (players.length === 0) throw new Error(messageFor(ctx, "noDevices"));
+  if (players.length === 1) throw new Error(messageFor(ctx, "oneDevice"));
+  if (players.length !== 2) throw new Error(messageFor(ctx, "wrongDeviceCount", { count: players.length }));
+  if (players.some((item) => !item.userId)) throw new Error(messageFor(ctx, "missingOwner"));
+  if (new Set(players.map((item) => item.userId)).size !== 2) throw new Error(messageFor(ctx, "sameOwner"));
+  if (new Set(players.map((item) => item.deviceId)).size !== 2) throw new Error(messageFor(ctx, "sameDevice"));
   const slots = new Set(players.map((item) => Number(item.slot)));
-  if (!slots.has(1) || !slots.has(2)) throw new Error("设备槽 1 和设备槽 2 必须全部关联");
+  if (!slots.has(1) || !slots.has(2)) throw new Error(messageFor(ctx, "missingSlots"));
 }
 
-async function handleDeviceNotify(ctx) {
+function validateOnlineDevices(devices, ctx) {
+  const slotsFor = (status) => devices
+    .filter((device) => device.online === status)
+    .map((device) => Number(device.slot))
+    .join(", ");
+  const offlineSlots = slotsFor(false);
+  if (offlineSlots) throw new Error(messageFor(ctx, "offlineSlots", { slots: offlineSlots }));
+  const unknownSlots = slotsFor(undefined);
+  if (unknownSlots) throw new Error(messageFor(ctx, "unknownOnlineSlots", { slots: unknownSlots }));
+}
+
+async function handleDeviceNotify(ctx, arrivedAt) {
   // Device-originated notifications identify the physical mug in ctx.from.id.
   const deviceId = String(ctx.from?.id || "");
   const events = pixelMug1.parseNotify(ctx.tal?.notify || []);
-  battleLog("deviceNotify.received", { deviceId, events });
+  if (events.length) battleLog("deviceNotify.received", { deviceId, queueWaitMs: Date.now() - arrivedAt, events });
 
   for (const event of events) {
     if (event.name !== "mpyVmEvent") continue;
@@ -322,6 +465,7 @@ async function handleDeviceNotify(ctx) {
     });
     battleLog("battleEvent.received", {
       deviceId,
+      queueWaitMs: Date.now() - arrivedAt,
       chatId: player.chat_id,
       userId: player.user_id,
       previousState: player.game_state,
@@ -334,6 +478,7 @@ async function handleDeviceNotify(ctx) {
         battleEvent.transId,
         battleEvent.ackMessageId,
       );
+      if (acked) lastCommandPushAt.delete(`${deviceId}:${battleEvent.ackMessageId}`);
       battleLog("command.ack", { deviceId, acked, battleEvent });
       continue;
     }
@@ -377,14 +522,15 @@ async function startRoundIfReady(chatId) {
       chatId,
       reason: players.length !== 2 ? `player count is ${players.length}` : "not every player is ready",
     });
-    return;
+    return false;
   }
   const transId = shortId();
   store.setRound(chatId, transId);
   for (const player of players) store.updateState(chatId, player.user_id, "go");
   const roundPlayers = store.players(chatId);
   battleLog("round.go", { chatId, transId, deviceIds: roundPlayers.map((item) => item.device_id) });
-  schedulePushes(roundPlayers.map((player) => issueCommand(player, "GO")), 20);
+  schedulePushes(roundPlayers.map((player) => issueCommand(player, "GO")));
+  return true;
 }
 
 function syncReadyDisplay(chatId) {
@@ -474,17 +620,21 @@ function pendingCommandJob(player) {
 
 async function redeliverPendingCommand(player) {
   const job = pendingCommandJob(player);
-  if (job) schedulePushes([job]);
+  if (job) schedulePushes([job], 0, COMMAND_RETRY_INTERVAL_MS);
 }
 
 function shortId() {
   return randomUUID().replace(/-/g, "").slice(0, 12);
 }
 
-function schedulePushes(jobs, waitMs = 0) {
+function schedulePushes(jobs, waitMs = 0, minIntervalMs = 0) {
   for (const job of jobs.filter(Boolean)) {
     const key = `${job.player.device_id}:${job.player.pending_command_id}`;
     if (pushInFlight.has(key)) continue;
+    const now = Date.now();
+    if (minIntervalMs && now - (lastCommandPushAt.get(key) || 0) < minIntervalMs) continue;
+    lastCommandPushAt.set(key, now);
+    if (lastCommandPushAt.size > 1024) lastCommandPushAt.delete(lastCommandPushAt.keys().next().value);
     pushInFlight.add(key);
     void delay(waitMs)
       .then(() => pushToPlayer(job.player, job.message))
@@ -496,8 +646,12 @@ function schedulePushes(jobs, waitMs = 0) {
 async function pushToPlayer(player, message) {
   const device = pixelMugs[Number(player.slot) - 1];
   if (!device) throw new Error(`Unknown device slot ${player.slot}`);
+  const startedAt = Date.now();
+  const [, roundId, commandId, command] = message.split("|");
   battleLog("push.request", {
     message,
+    command,
+    commandId,
     chatId: player.chat_id,
     userId: player.user_id,
     deviceId: player.device_id,
@@ -515,12 +669,18 @@ async function pushToPlayer(player, message) {
     battleLog("push.asyncSent", {
       message,
       traceId: task.traceId,
+      submissionMs: Date.now() - startedAt,
       deviceId: player.device_id,
       slot: player.slot,
     });
+    if (task.traceId) {
+      pendingPushTraces.set(task.traceId, { command, roundId, startedAt });
+      if (pendingPushTraces.size > 1024) pendingPushTraces.delete(pendingPushTraces.keys().next().value);
+    }
   } catch (error) {
     battleLog("push.failed", {
       message,
+      submissionMs: Date.now() - startedAt,
       deviceId: player.device_id,
       slot: player.slot,
       error: errorMessage(error),
@@ -533,27 +693,37 @@ function delay(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
+function sendAddedIntro(ctx, options = {}) {
+  return ctx.sendBindDevice({
+    content: messageFor(ctx, "intro"),
+    actionButtonTitle: messageFor(ctx, "bindButton"),
+    ...options,
+  });
+}
+
+function localeFromContext(ctx) {
+  const source = String(ctx?.from?.language || ctx?.chat?.language || process.env.APP_LOCALE || "").toLowerCase();
+  return source.startsWith("zh") ? "zh-CN" : "en-US";
+}
+
+function messageFor(ctx, key, params = {}) {
+  const locale = localeFromContext(ctx);
+  const template = messages[locale]?.[key] || messages["en-US"][key] || key;
+  return Object.entries(params).reduce(
+    (result, [name, value]) => result.split(`{${name}}`).join(String(value)),
+    template,
+  );
+}
+
 async function sendBindDevice(ctx) {
   if (!isGroupChat(ctx)) {
-    await ctx.sendText("双人对战的设备槽属于群聊。请先把两位玩家和 Bot 加入同一个群，然后在群里使用 /bindDevice。");
+    await ctx.sendText(messageFor(ctx, "bindGroupOnly"));
     return;
   }
-  await ctx.sendMarkdown([
-    "# 🎮 欢迎来到方块下落游戏（双人对战版）",
-    "",
-    "游戏需要在同一个冒泡群组中进行，两位玩家分别关联自己的 **PixelMug**。",
-    "",
-    "## 🏆 游戏规则",
-    "",
-    "- 每位玩家在自己的 PixelMug 上进行游戏。",
-    "- 两位玩家都进行到游戏结束，并按最终消除行数判定胜负；行数相同则为平局。",
-    "- 如果一位玩家始终没有开始，另一位玩家结束时，未开始玩家按 0 行判负。",
-    "",
-    "## ✨ 让我们开始吧！",
-  ].join("\n"), { mentionOnly: true });
+  await ctx.sendMarkdown(messageFor(ctx, "bindRules"), { mentionOnly: true });
   await ctx.sendBindDevice({
-    content: "两位玩家请分别选择一个尚未占用的设备槽，并关联自己的 PixelMug。",
-    actionButtonTitle: "查看并绑定对战设备",
+    content: messageFor(ctx, "bindPrompt"),
+    actionButtonTitle: messageFor(ctx, "bindButton"),
     mentionOnly: true,
   });
 }
@@ -590,10 +760,16 @@ function launchUrl(value) {
   return url.toString();
 }
 
-function errorMessage(error) {
-  const message = error instanceof Error ? error.message : String(error || "未知错误");
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing required environment variable: ${name}`);
+  return value;
+}
+
+function errorMessage(error, ctx) {
+  const message = error instanceof Error ? error.message : String(error || messageFor(ctx, "unknownError"));
   if (/requires device binding|\/attachdevice/i.test(message)) {
-    return "此应用需要绑定设备。请发送“/attachdevice”，并按照提示绑定您的设备。";
+    return messageFor(ctx, "bindingRequired");
   }
   return message;
 }
@@ -714,26 +890,6 @@ function battleLog(event, data = {}) {
   console.log(`[block-drop-battle][${new Date().toISOString()}] ${event}`, data);
 }
 
-function startStaticServer() {
-  const root = fileURLToPath(new URL("../webapp/dist", import.meta.url));
-  const server = createServer(async (req, res) => {
-    try {
-      const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-      const path = normalize(join(root, decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname)));
-      if (relative(root, path).startsWith("..")) return reply(res, 403, "Forbidden");
-      if (!(await stat(path)).isFile()) return reply(res, 404, "Not found");
-      res.writeHead(200, { "content-type": contentType(path), "cache-control": "no-store" });
-      createReadStream(path).pipe(res);
-    } catch (error) {
-      reply(res, 404, String(error?.code || "").includes("ENOENT") ? "Run npm run build first." : "Not found");
-    }
-  });
-  return new Promise((resolvePromise, reject) => {
-    server.once("error", reject);
-    server.listen(port, "0.0.0.0", () => { server.off("error", reject); resolvePromise(server); });
-  });
-}
-
 async function applyBattleState(player, event) {
   const { type, lines, transId } = event;
   if (type === "JOIN") {
@@ -750,8 +906,7 @@ async function applyBattleState(player, event) {
       store.resetPlayerTransport(player.chat_id, player.user_id, transId);
     }
     store.updateState(player.chat_id, player.user_id, "ready");
-    syncReadyDisplay(player.chat_id);
-    await startRoundIfReady(player.chat_id);
+    if (!await startRoundIfReady(player.chat_id)) syncReadyDisplay(player.chat_id);
     return;
   }
   if (type === "PLAYING") {
@@ -779,14 +934,8 @@ function parseBattleEvent(raw) {
     type,
     lines: Math.max(0, Math.floor(Number(parts[4] || 0))),
     ackMessageId: type === "ACK" ? String(parts[4] || "") : "",
+    reportAttempt: type === "ACK" ? 0 : Math.max(0, Math.floor(Number(parts[5] || 0))),
+    deviceTickMs: type === "ACK" ? 0 : Math.max(0, Math.floor(Number(parts[6] || 0))),
   };
 }
 
-function reply(res, status, body) {
-  res.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
-  res.end(body);
-}
-
-function contentType(path) {
-  return ({ ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml" })[extname(path)] || "application/octet-stream";
-}

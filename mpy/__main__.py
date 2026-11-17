@@ -44,10 +44,10 @@ STATE_FINISHED = "finished"
 STATE_WIN = "win"
 STATE_LOSE = "lose"
 STATE_DRAW = "draw"
-READY_REPORT_RETRY_MS = 250
-PLAYING_REPORT_RETRY_MS = 500
-FINISHED_REPORT_RETRY_MS = 250
-COMMAND_ACK_RETRY_MS = 250
+READY_REPORT_RETRY_MS = 1000
+PLAYING_REPORT_RETRY_MS = 2000
+FINISHED_REPORT_RETRY_MS = 1000
+COMMAND_ACK_RETRY_MS = 1000
 COMMAND_ACK_ATTEMPTS = 4
 
 # I, J, L, O, S, T, Z: cyan, blue, orange, yellow, green, purple, red.
@@ -99,6 +99,7 @@ class BlockDropBattleApp:
         self.transport_trans_id = self.new_transport_id()
         self.pending_event_name = ""
         self.pending_event_message_id = ""
+        self.pending_event_attempts = 0
         self.pending_ack_command_id = ""
         self.pending_ack_message_id = ""
         self.pending_ack_attempts = 0
@@ -194,6 +195,7 @@ class BlockDropBattleApp:
         self.transport_trans_id = self.new_transport_id()
         self.pending_event_name = ""
         self.pending_event_message_id = ""
+        self.pending_event_attempts = 0
         self.pending_ack_command_id = ""
         self.pending_ack_message_id = ""
         self.pending_ack_attempts = 0
@@ -563,17 +565,32 @@ class BlockDropBattleApp:
         if self.pending_event_name != state or not self.pending_event_message_id:
             self.pending_event_name = state
             self.pending_event_message_id = self.next_transport_message_id()
-        message = "BDB2|%s|%s|%s|%d" % (
+            self.pending_event_attempts = 0
+        self.pending_event_attempts += 1
+        report_tick = ticks_ms()
+        message = "BDB2|%s|%s|%s|%d|%d|%d" % (
             self.transport_trans_id,
             self.pending_event_message_id,
             state,
             self.lines,
+            self.pending_event_attempts,
+            report_tick,
         )
         try:
-            return mpyvm_event.report(mpyvm_event.INFO, self.lines, message)
+            queued = self.send_battle_message(message, self.lines)
+            if state in ("READY", "GAME_OVER") and (self.pending_event_attempts == 1 or self.pending_event_attempts % 5 == 0):
+                print("[BlockDropBattle] event", state, "id", self.pending_event_message_id,
+                      "attempt", self.pending_event_attempts, "tick", report_tick, "queued", queued)
+            return queued
         except Exception as exc:
             print("[BlockDropBattle] event report failed:", exc)
             return False
+
+    def send_battle_message(self, message, data):
+        studio_report = globals().get("__studio_report_event__")
+        if studio_report is not None:
+            return studio_report(message)
+        return mpyvm_event.report(mpyvm_event.INFO, data, message)
 
     def new_transport_id(self):
         return "%08x%04x" % (ticks_ms() & 0xFFFFFFFF, random.getrandbits(16))
@@ -600,7 +617,7 @@ class BlockDropBattleApp:
         self.pending_ack_attempts += 1
         self.last_ack_report_ms = ticks_ms()
         try:
-            return mpyvm_event.report(mpyvm_event.INFO, 0, message)
+            return self.send_battle_message(message, 0)
         except Exception as exc:
             print("[BlockDropBattle] command ack failed:", exc)
             return False
@@ -613,6 +630,9 @@ class BlockDropBattleApp:
         command_message_id = parts[2]
         command = parts[3].upper()
         accepted = False
+        if command in ("GO", "WIN", "LOSE", "DRAW"):
+            print("[BlockDropBattle] command received", command, "id", command_message_id,
+                  "tick", ticks_ms(), "state", self.state, "round", self.transport_trans_id)
         # READY display snapshots are idempotent and do not need command ACKs.
         if command == "P1_READY":
             if self.state in (STATE_JOIN, STATE_READY):
@@ -667,6 +687,9 @@ class BlockDropBattleApp:
             self.publish_state("blockDropBattleDraw")
             accepted = True
         if accepted:
+            if command in ("GO", "WIN", "LOSE", "DRAW"):
+                print("[BlockDropBattle] command applied", command, "id", command_message_id,
+                      "tick", ticks_ms(), "state", self.state)
             self.report_command_ack(command_message_id)
 
 

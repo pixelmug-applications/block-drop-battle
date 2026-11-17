@@ -6,9 +6,12 @@
   "scripts": {
     "dev": "npm --prefix webapp run dev",
     "build": "npm --prefix webapp run build",
-    "bot": "node bot/block-drop-battle-bot.js",
+    "bot": "node bot/index.js",
     "preview": "npm --prefix webapp run preview",
     "test": "node --test bot/*.test.js"
   },
-  "engines": { "node": ">=24" }
+  "engines": { "node": ">=24" },
+  "dependencies": {
+    "@jeejio-bubble/bot": "0.1.9"
+  }
 }

@@ -1,4 +1,4 @@
-declare module '../../../jeejio-bubble/sdk/WebApp.js' {
+declare module '@jeejio-bubble/bot/sdk/WebApp.js' {
   export class BubbleWebApp {
     constructor(options?: Record<string, unknown>);
     ble?: unknown;
@@ -6,12 +6,13 @@ declare module '../../../jeejio-bubble/sdk/WebApp.js' {
     getDevices(): Promise<unknown[]>;
     request(type: string, payload?: unknown, options?: Record<string, unknown>): Promise<unknown>;
     callDevice(device: unknown, payload: unknown, options?: Record<string, unknown>): Promise<unknown>;
-    subscribeDeviceEvents(device: unknown): Promise<unknown>;
+    subscribeDeviceEvents(device: unknown, options?: Record<string, unknown>): Promise<unknown>;
+    unsubscribeDeviceEvents(device: unknown, options?: Record<string, unknown>): Promise<unknown>;
     onDeviceEvent(handler: (event: unknown) => void): void;
   }
 }
 
-declare module '../../../jeejio-bubble/sdk/BleAppClient.js' {
+declare module '@jeejio-bubble/bot/sdk/BleAppClient.js' {
   export class BleAppClient {
     constructor(bridge: unknown, options?: Record<string, unknown>);
     state: { connection: string; message?: string; lastError?: string };

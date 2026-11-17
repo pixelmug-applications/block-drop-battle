@@ -1,3 +1,4 @@
+debug/
 node_modules/
 webapp/node_modules/
 dist/
@@ -8,5 +9,3 @@ __pycache__/
 *.py[cod]
 *.log
 bot/data/
-bot/config.dev.js
-bot/config.pub.js

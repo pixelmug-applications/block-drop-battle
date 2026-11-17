@@ -1,66 +1,45 @@
-# 方块落下对战版
+# Block Drop Battle
 
-`block-drop-battle` 是两名用户、两台 PixelMugS1 的实时俄罗斯方块对战游戏。
+`block-drop-battle` is a two-player block-dropping game played on two PixelMug S1 devices. A Bot coordinates the match, each player's WebApp controls their own device over BLE, and the Bot keeps group leaderboards.
 
-## 对战流程
+## Play a match
 
-1. 两名玩家和 Bot 必须在同一个群聊中。
-2. 在群内执行 `/bindDevice`，两名玩家各选择一个未占用 slot，绑定各自的 PixelMugS1。
-3. 执行 `/battle`。用户点击 inline keyboard 时，Bot 检查群聊、两个设备槽、设备所有者和点击用户，通过后才提供 WebApp 入口。
-4. WebApp 再次读取共享绑定快照，只在点击用户自己的设备上安装 MPS。
-5. MPY 初始显示 `JOIN`；点击加入后显示 `READY`。两台设备都准备好后显示 `GO`。
-6. 每位玩家都持续游戏到 `GAME_OVER`；双方结束后，Bot 按最终消除行数判定胜负，两台设备显示 `WIN` / `LOSE` 和各自的消除行数。
-7. 双方消除行数相同时显示 `DRAW`，该局不写入对战榜，也不改变任何玩家的胜局数。
-8. 如果一方始终停留在 `GO`、没有开始游戏，另一方 `GAME_OVER` 时未开始的一方自动按 0 行判负。
-9. 点击重新开始回到 `JOIN`，开始下一轮。
+1. Add the Bot and both players to the same group chat.
+2. Use `/bindDevice` in the group. Each player binds their own PixelMug S1 to a different device slot and connects it so both devices are online.
+3. Use `/battle` and open the WebApp link. The Bot sends the link only when both slots hold different players' devices and both devices are online; otherwise it explains what is missing. The WebApp installs and starts the MPS only on the current player's device. A group member without a bound device can view the leaderboards.
+4. Each device starts at `JOIN`. Once both players join, the devices show `READY`, then `GO` when the round starts.
+5. When both games end, the Bot compares cleared lines and sends `WIN` or `LOSE` to the devices. Equal scores produce `DRAW` and do not count as wins. If one player never starts after `GO`, that player loses with zero lines when the other game ends.
+6. Select restart to return to `JOIN` for another round.
 
-## 群组对战榜
+## Leaderboards and storage
 
-WebApp 提供“游戏”和“对战榜”两个视图。每局产生胜负后，Bot 会在不影响
-WIN/LOSE 下发的前提下记录本局历史，并按玩家组合汇总双方胜场；平局不记录。
+The WebApp provides a match leaderboard and a personal best leaderboard. Both are scoped to the group chat and are fetched from the Bot without a BLE connection. The Bot records each completed match once, excludes draws from win counts, and updates a player's personal best only when they clear more lines. Unbinding or replacing a device does not erase match history.
 
-- 排行榜以 `chat_id` 隔离，同一玩家在不同群的成绩互不影响。
-- `(chat_id, round_id)` 唯一约束保证重复 GAME_OVER 不会重复计分。
-- 玩家解绑或更换设备不会删除历史成绩。
-- 用户名和头像保存为群内用户档案，并在绑定设备或打开 WebApp 时更新。
-- 排行榜通过 `battle.getLeaderboard` 读取 Bot 数据，不依赖 BLE 连接。
-- Bot 在每位玩家最终 `GAME_OVER` 时更新该群的个人最高消除行数；只有新成绩更高时才覆盖。
-- 个人英雄榜通过 `battle.getPersonalLeaderboard` 按最高消除行数从高到低读取，数据同样以 `chat_id` 隔离。
+The Bot stores group bindings, player profiles, match state, results, leaderboards, and pending device commands in `bot/data/battle.sqlite`. This directory is ignored by Git. You can delete local test data; the Bot recreates the database on its next start. Set `BATTLE_DB_PATH` to use another database file.
 
-## 可靠消息协议
+## Device message protocol
 
-游戏状态上报和命令下发都复用设备已有的 MQTT/TAL 通道，不需要额外 HTTP 服务或公网 Battle URL。
-
-协议帧格式：
+The devices and Bot exchange game events and commands over the existing MQTT/TAL channel; no separate battle server is required.
 
 ```text
-上报：BDB2|<trans_id>|<message_id>|<JOIN|READY|PLAYING|GAME_OVER>|<lines>
-确认：BDB2|<trans_id>|<message_id>|ACK|<command_message_id>
-下发：BDB2|<trans_id>|<message_id>|<P1_READY|P2_READY|GO|WIN|LOSE|DRAW>
+Device event: BDB2|<trans_id>|<message_id>|<JOIN|READY|PLAYING|GAME_OVER>|<lines>
+Device ACK:   BDB2|<trans_id>|<message_id>|ACK|<command_message_id>
+Bot command:  BDB2|<trans_id>|<message_id>|<P1_READY|P2_READY|GO|WIN|LOSE|DRAW>
 ```
 
-- `trans_id`：一轮 Battle 的唯一事务 ID。两名玩家 READY 后由 Bot 生成，并通过 GO 命令同步给两台设备。
-- `message_id`：状态或命令的唯一消息 ID。重发保持同一个 ID，接收端据此幂等去重。
-- READY 每 250ms 重发，直到收到 GO。
-- PLAYING 每 500ms 发送同一消息作为低频心跳，保证开始状态和胜负命令丢失时能够快速补发。
-- GAME_OVER 每 250ms 重发，直到收到 WIN/LOSE/DRAW。
-- MPY 对 GO/WIN/LOSE/DRAW 上报 ACK；Bot 在 SQLite 中持久化待确认命令和 ACK 状态。
-- Bot 的 push RPC 返回失败时会记录日志，下一次状态重发/心跳会再次发送相同命令 ID。
+The Bot assigns a transaction ID after both players are ready. Retries keep the same message ID so duplicate reports can be ignored. Devices retry `READY` and `GAME_OVER` every 250 ms until they receive the corresponding command, and report `PLAYING` every 500 ms as a heartbeat. The Bot persists pending commands and acknowledgments in SQLite and retries a failed push when the next device report arrives.
 
-Bot 使用全新的 `bot/data/battle.sqlite` 保存群聊、用户、设备、slot、游戏状态、结果、事务 ID、消息 ID、待确认命令和 ACK 状态；开发阶段不迁移或兼容旧数据库。
+## Run in PixelMug Studio
 
-## 配置和运行
+Use Node.js 24 or later. Open this project directory in PixelMug Studio, configure the Bot token, bind both PixelMug S1 devices, then build and run the project. Studio supplies the WebApp URL and MPS ID and version, and serves the WebApp files. The WebApp starts the MPS automatically when a player opens it.
 
-需要 Node.js 24 或更高版本：
+To check the project locally:
 
-```powershell
-$env:BUBBLE_BOT_TOKEN='...'
-$env:BUBBLE_API_BASE_URL='...'
-$env:MPS_ID='...'
-$env:MPS_VERSION='1.1.1'
+```sh
+npm install
 npm --prefix webapp install
+npm test
 npm run build
-npm run bot
 ```
 
-可用 `BATTLE_DB_PATH` 修改 SQLite 文件位置，用 `WEBAPP_URL` 指向已部署的 WebApp。
+If PixelMug Skill is installed, you can also run its `validate-project.mjs` script with `--build` against this directory.
