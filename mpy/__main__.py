@@ -16,9 +16,10 @@ BOARD_H = 16
 BOARD_X = (SCR_W - BOARD_W) // 2
 LEFT_WALL_X = BOARD_X - 1
 RIGHT_WALL_X = BOARD_X + BOARD_W
-PREVIEW_X = RIGHT_WALL_X + 1
-PREVIEW_CONTENT_X = PREVIEW_X + 1
-PREVIEW_W = SCR_W - PREVIEW_X
+PREVIEW_X = 0
+PREVIEW_W = LEFT_WALL_X
+SCORE_X = RIGHT_WALL_X + 1
+SCORE_W = SCR_W - SCORE_X
 FPS = 30
 LINE_FLASH_INTERVAL_MS = 100
 LINE_FLASH_PHASES = 4
@@ -68,6 +69,7 @@ SHAPES = (
 )
 
 WAITING_BLINK_MS = 1000
+SCORE_BLINK_MS = 500
 
 # Minimal 3x5 glyphs used for the cleared-line counter.
 DIGIT_3X5 = (
@@ -178,6 +180,9 @@ class BlockDropBattleApp:
     def reset_game(self, start=False):
         self.board = [[0 for _ in range(BOARD_W)] for _ in range(BOARD_H)]
         self.lines = 0
+        self.opponent_lines = 0
+        self.opponent_playing = False
+        self.opponent_finished = False
         self.state = STATE_JOIN
         self.piece = None
         self.clearing_rows = []
@@ -280,6 +285,7 @@ class BlockDropBattleApp:
         self.board = [[0 for _ in range(BOARD_W)] for _ in range(cleared)] + kept
         self.clearing_rows = []
         self.lines += cleared
+        self.report_battle_event("BATTLE_SCORE", fresh=True)
         self.last_drop_ms = ticks_ms()
         self.publish_state("blockDropBattleLineClear")
         self.spawn_piece()
@@ -378,10 +384,6 @@ class BlockDropBattleApp:
         if self.state in (STATE_JOIN, STATE_READY, STATE_GO):
             self.draw_waiting_screen()
             return
-        if self.state == STATE_FINISHED:
-            self.draw_centered_text(2, "OVER", COL_RED)
-            self.draw_centered_text(9, str(min(999, self.lines)), COL_WHITE)
-            return
         if self.state in (STATE_WIN, STATE_LOSE, STATE_DRAW):
             if self.state == STATE_WIN:
                 label = "WIN"
@@ -393,7 +395,7 @@ class BlockDropBattleApp:
                 label = "DRAW"
                 color = COL_WHITE
             self.draw_centered_text(1, label, color)
-            self.draw_centered_text(9, str(min(999, self.lines)), COL_WHITE)
+            self.draw_final_score()
             return
         self.draw_walls()
         for y in range(BOARD_H):
@@ -415,7 +417,7 @@ class BlockDropBattleApp:
                 if y >= 0:
                     pyxel.pset(BOARD_X + x, y, color)
         self.draw_next_piece()
-        self.draw_line_count()
+        self.draw_scores()
 
     def draw_waiting_screen(self):
         label = self.state.upper()
@@ -445,8 +447,9 @@ class BlockDropBattleApp:
         cells = SHAPES[self.next_kind][0]
         min_x, max_x, min_y, max_y = self.cell_bounds(cells)
         width = max_x - min_x + 1
+        height = max_y - min_y + 1
         origin_x = PREVIEW_X + (PREVIEW_W - width) // 2 - min_x
-        origin_y = -min_y
+        origin_y = 6 + (4 - height) // 2 - min_y
         self.draw_shape(cells, origin_x, origin_y, PIECE_COLORS[self.next_kind])
 
     def cell_bounds(self, cells):
@@ -460,13 +463,30 @@ class BlockDropBattleApp:
         for dx, dy in cells:
             pyxel.pset(origin_x + dx, origin_y + dy, color)
 
-    def draw_line_count(self):
-        value = str(min(999, max(0, self.lines)))
-        x = PREVIEW_CONTENT_X
-        y = SCR_H - 5
+    def draw_score(self, value, y, color, blink=False):
+        if blink and (ticks_ms() // SCORE_BLINK_MS) % 2:
+            return
+        value = str(min(999, max(0, value)))
+        x = SCORE_X + (SCORE_W - 3 * len(value)) // 2
         for digit in value:
-            self.draw_digit_3x5(x, y, int(digit), COL_YELLOW)
+            self.draw_digit_3x5(x, y, int(digit), color)
             x += 3
+
+    def draw_scores(self):
+        self.draw_score(self.lines, 0, COL_YELLOW, self.state == STATE_FINISHED)
+        pyxel.pset(SCORE_X + 3, 8, COL_RED if self.state == STATE_FINISHED else COL_GREEN)
+        peer_color = COL_RED if self.opponent_finished else COL_GREEN if self.opponent_playing else COL_WALL_GRAY
+        pyxel.pset(SCORE_X + 6, 8, peer_color)
+        self.draw_score(self.opponent_lines, 11, COL_RED, self.opponent_finished)
+
+    def draw_final_score(self):
+        mine = str(min(999, max(0, self.lines)))
+        peer = str(min(999, max(0, self.opponent_lines)))
+        x = (SCR_W - 4 * (len(mine) + len(peer) + 1)) // 2
+        pyxel.text(x, 9, mine, COL_YELLOW)
+        x += 4 * len(mine)
+        pyxel.text(x, 9, ":", COL_WHITE)
+        pyxel.text(x + 4, 9, peer, COL_RED)
 
     def draw_digit_3x5(self, x, y, digit, color):
         rows = DIGIT_3X5[digit]
@@ -526,6 +546,9 @@ class BlockDropBattleApp:
         return {
             "state": self.state,
             "lines": self.lines,
+            "opponentLines": self.opponent_lines,
+            "opponentPlaying": self.opponent_playing,
+            "opponentFinished": self.opponent_finished,
             "level": self.lines // 5 + 1,
             "nextKind": self.next_kind,
             "soundEnabled": self.sound_enabled,
@@ -546,23 +569,19 @@ class BlockDropBattleApp:
         self.report_battle_event("BATTLE_GAME_OVER")
         self.finished_report_pending = self.state == STATE_FINISHED
         self.last_state_report_ms = ticks_ms()
-        if self.state == STATE_WIN:
-            self.publish_state("blockDropBattleWin")
-        elif self.state == STATE_LOSE:
-            self.publish_state("blockDropBattleLose")
-        else:
-            self.publish_state("blockDropBattleGameOver")
+        self.publish_state("blockDropBattleGameOver")
 
-    def report_battle_event(self, name):
+    def report_battle_event(self, name, fresh=False):
         state = {
             "BATTLE_JOIN": "JOIN",
             "BATTLE_READY": "READY",
             "BATTLE_PLAYING": "PLAYING",
+            "BATTLE_SCORE": "SCORE",
             "BATTLE_GAME_OVER": "GAME_OVER",
         }.get(name, "")
         if not state:
             return False
-        if self.pending_event_name != state or not self.pending_event_message_id:
+        if fresh or self.pending_event_name != state or not self.pending_event_message_id:
             self.pending_event_name = state
             self.pending_event_message_id = self.next_transport_message_id()
             self.pending_event_attempts = 0
@@ -644,6 +663,20 @@ class BlockDropBattleApp:
                 self.ready_player_count = 2
                 self.publish_state("blockDropBattleReadyPlayersChanged")
             return
+        if command == "PEER" and trans_id == self.transport_trans_id:
+            if self.state in (STATE_GO, STATE_PLAYING, STATE_FINISHED) and len(parts) >= 6:
+                try:
+                    score = max(0, int(parts[4]))
+                except ValueError:
+                    return
+                peer_state = parts[5]
+                if peer_state not in ("P", "F"):
+                    return
+                self.opponent_lines = max(self.opponent_lines, score)
+                self.opponent_playing = True
+                self.opponent_finished = self.opponent_finished or peer_state == "F"
+                self.publish_state("blockDropBattleOpponentChanged")
+            return
         if command == "GO" and self.state == STATE_READY:
             self.transport_trans_id = trans_id
             self.pending_event_name = ""
@@ -657,6 +690,7 @@ class BlockDropBattleApp:
         elif command == "GO" and trans_id == self.transport_trans_id and self.state in (STATE_GO, STATE_PLAYING):
             accepted = True
         elif command == "WIN" and trans_id == self.transport_trans_id:
+            self.apply_final_opponent_score(parts)
             self.finished_report_pending = False
             self.playing_report_pending = False
             self.pending_event_name = ""
@@ -667,6 +701,7 @@ class BlockDropBattleApp:
             self.publish_state("blockDropBattleWin")
             accepted = True
         elif command == "LOSE" and trans_id == self.transport_trans_id:
+            self.apply_final_opponent_score(parts)
             self.finished_report_pending = False
             self.playing_report_pending = False
             self.pending_event_name = ""
@@ -677,6 +712,7 @@ class BlockDropBattleApp:
             self.publish_state("blockDropBattleLose")
             accepted = True
         elif command == "DRAW" and trans_id == self.transport_trans_id:
+            self.apply_final_opponent_score(parts)
             self.finished_report_pending = False
             self.playing_report_pending = False
             self.pending_event_name = ""
@@ -691,6 +727,16 @@ class BlockDropBattleApp:
                 print("[BlockDropBattle] command applied", command, "id", command_message_id,
                       "tick", ticks_ms(), "state", self.state)
             self.report_command_ack(command_message_id)
+
+    def apply_final_opponent_score(self, parts):
+        if len(parts) < 6:
+            return
+        try:
+            self.opponent_lines = max(self.opponent_lines, max(0, int(parts[5])))
+        except ValueError:
+            return
+        self.opponent_playing = True
+        self.opponent_finished = True
 
 
 def appMain():

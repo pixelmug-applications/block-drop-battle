@@ -4,6 +4,7 @@ import { BubbleBot, InlineKeyboard } from "@jeejio-bubble/bot/sdk";
 import PixelMugS1 from "@jeejio-bubble/bot/devices/pixelmug-s1/ext";
 import { BattleStore } from "./battle-store.js";
 import { resolveRoundOutcome } from "./battle-rules.js";
+import { parseBattleEvent, peerSnapshotMessage, resultCommandPayload } from "./battle-protocol.js";
 const token = requiredEnv("BOT_TOKEN");
 const mpsID = requiredEnv("STUDIO_MPS_ID");
 const mpsVersion = requiredEnv("STUDIO_MPS_VERSION");
@@ -14,6 +15,7 @@ const store = new BattleStore(
 );
 const battleDebug = process.env.BATTLE_DEBUG !== "false";
 const pushInFlight = new Set();
+const peerSnapshots = new Map();
 const lastCommandPushAt = new Map();
 const pendingPushTraces = new Map();
 const COMMAND_RETRY_INTERVAL_MS = 2000;
@@ -483,7 +485,7 @@ async function handleDeviceNotify(ctx, arrivedAt) {
       continue;
     }
     if (
-      ["PLAYING", "GAME_OVER"].includes(battleEvent.type)
+      ["PLAYING", "SCORE", "GAME_OVER"].includes(battleEvent.type)
       && player.round_id
       && battleEvent.transId !== player.round_id
     ) {
@@ -505,6 +507,10 @@ async function handleDeviceNotify(ctx, arrivedAt) {
       await applyBattleState(player, battleEvent);
     } else {
       battleLog("battleEvent.duplicate", { deviceId, battleEvent });
+      if (battleEvent.type === "PLAYING") {
+        const current = store.playerForDevice(player.chat_id, deviceId);
+        if (current?.game_state === "playing" && !current.result) syncOpponentSnapshot(current);
+      }
     }
     await redeliverPendingCommand(store.playerForDevice(player.chat_id, deviceId));
     battleLog("battleEvent.stored", {
@@ -606,8 +612,29 @@ async function finishRound(chatId, endedUserId) {
 
 function issueCommand(player, command) {
   const commandId = shortId();
-  const updated = store.setPendingCommand(player.chat_id, player.user_id, command, commandId);
+  const opponent = store.players(player.chat_id).find((item) => item.user_id !== player.user_id);
+  const payload = resultCommandPayload(command, player.lines, opponent?.lines || 0);
+  const updated = store.setPendingCommand(player.chat_id, player.user_id, payload, commandId);
   return pendingCommandJob(updated);
+}
+
+function syncOpponentSnapshot(source) {
+  const opponent = store.players(source.chat_id).find((item) => item.user_id !== source.user_id);
+  if (!opponent || !source.round_id || opponent.round_id !== source.round_id || opponent.result) return;
+  if (!["go", "playing", "finished"].includes(opponent.game_state)) return;
+  const key = `${source.chat_id}:${source.round_id}:${opponent.device_id}`;
+  const snapshot = `${source.lines}:${source.game_state === "finished" ? "F" : "P"}`;
+  const previous = peerSnapshots.get(key);
+  const now = Date.now();
+  if (previous?.snapshot === snapshot && now - previous.sentAt < 10000) return;
+  peerSnapshots.set(key, { snapshot, sentAt: now });
+  if (peerSnapshots.size > 1024) peerSnapshots.delete(peerSnapshots.keys().next().value);
+  const message = peerSnapshotMessage(source.round_id, shortId(), source.lines, source.game_state === "finished");
+  battleLog("peer.snapshot", {
+    chatId: source.chat_id, fromDeviceId: source.device_id, toDeviceId: opponent.device_id,
+    lines: source.lines, finished: source.game_state === "finished",
+  });
+  void pushToPlayer(opponent, message);
 }
 
 function pendingCommandJob(player) {
@@ -909,33 +936,26 @@ async function applyBattleState(player, event) {
     if (!await startRoundIfReady(player.chat_id)) syncReadyDisplay(player.chat_id);
     return;
   }
-  if (type === "PLAYING") {
+  if (type === "PLAYING" || type === "SCORE") {
     if (player.result) return;
     if (!["go", "playing"].includes(player.game_state)) return;
-    store.updateState(player.chat_id, player.user_id, "playing");
+    const nextLines = Math.max(player.lines, lines);
+    const started = player.game_state !== "playing";
+    const changed = started || nextLines > player.lines;
+    const updated = store.updateState(player.chat_id, player.user_id, "playing", { lines: nextLines });
+    if (changed) syncOpponentSnapshot(updated);
+    if (started) {
+      const opponent = store.players(player.chat_id).find((item) => item.user_id !== player.user_id);
+      if (["playing", "finished"].includes(opponent?.game_state)) syncOpponentSnapshot(opponent);
+    }
     return;
   }
-  if (player.game_state === "finished" && player.result) return;
+  if (player.game_state === "finished") return;
   if (!["go", "playing"].includes(player.game_state)) return;
-  const finishedPlayer = store.updateState(player.chat_id, player.user_id, "finished", { lines });
-  recordPersonalBest(finishedPlayer, lines);
+  const finalLines = Math.max(player.lines, lines);
+  const finishedPlayer = store.updateState(player.chat_id, player.user_id, "finished", { lines: finalLines });
+  recordPersonalBest(finishedPlayer, finalLines);
+  syncOpponentSnapshot(finishedPlayer);
   await finishRound(player.chat_id, player.user_id);
-}
-
-function parseBattleEvent(raw) {
-  const parts = String(raw || "").split("|");
-  if (parts[0] !== "BDB2" || parts.length < 4) return null;
-  if (!parts[1] || !parts[2]) return null;
-  const type = String(parts[3] || "").toUpperCase();
-  if (!["JOIN", "READY", "PLAYING", "GAME_OVER", "ACK"].includes(type)) return null;
-  return {
-    transId: String(parts[1] || ""),
-    messageId: String(parts[2] || ""),
-    type,
-    lines: Math.max(0, Math.floor(Number(parts[4] || 0))),
-    ackMessageId: type === "ACK" ? String(parts[4] || "") : "",
-    reportAttempt: type === "ACK" ? 0 : Math.max(0, Math.floor(Number(parts[5] || 0))),
-    deviceTickMs: type === "ACK" ? 0 : Math.max(0, Math.floor(Number(parts[6] || 0))),
-  };
 }
 

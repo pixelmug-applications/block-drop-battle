@@ -2,6 +2,7 @@ debug/
 node_modules/
 webapp/node_modules/
 dist/
+test/
 webapp/dist/
 mpy/dist/
 *.mps
