@@ -1,7 +1,7 @@
 {
   "name": "block-drop-battle",
   "version": "1.0.1",
-  "description": "方块落下对战版：两台 PixelMugS1 的双人实时俄罗斯方块对战。",
+  "description": "Block Drop Battle Edition: Two players in a group, each binding to their own PixelMug S1, with real-time battles and leaderboards.",
   "author": "",
   "category": "Game",
   "dependencies": [
